@@ -1,0 +1,3 @@
+[submodule "beerlang"]
+	path = beerlang
+	url = https://github.com/nvlass/beerlang

@@ -1,0 +1,5 @@
+build/
+beeros.elf
+beeros.bin
+*~
+*.o

@@ -1,43 +1,57 @@
 # beeros Makefile
-# Cross-compile Beerlang for bare-metal targets
+# Cross-compile Beerlang for bare-metal targets via picolibc.
+#
+# One-time setup (macOS):
+#   scripts/setup-toolchain.sh
 #
 # Usage:
-#   make BOARD=virt-riscv          build + run in QEMU (RISC-V)
-#   make BOARD=virt-aarch64        build + run in QEMU (AArch64)
-#   make BOARD=<real-board>        cross-compile for hardware
-#   make run BOARD=<name>          launch in QEMU (virt targets only)
+#   make BOARD=virt-riscv          build for RISC-V QEMU
+#   make BOARD=virt-aarch64        build for AArch64 QEMU
+#   make run  BOARD=<name>         launch in QEMU
 #   make clean
 #
-# Each platform/$(BOARD)/board.mk sets CROSS, ARCH_CFLAGS, QEMU, QEMU_FLAGS.
+# Override picolibc location if you installed elsewhere:
+#   make BOARD=virt-riscv PICOLIBC_PREFIX=/my/picolibc
+
+.DEFAULT_GOAL := all
 
 BOARD ?= $(error Please set BOARD=<name> — e.g. make BOARD=virt-riscv)
 
-# Load board-specific toolchain and QEMU settings (sets CROSS, ARCH_CFLAGS, QEMU, QEMU_FLAGS)
+# ── toolchain ──────────────────────────────────────────────────────────
 -include platform/$(BOARD)/board.mk
 
-# Defaults — overridden by board.mk
-CROSS       ?= riscv64-unknown-elf
+CROSS       ?= riscv64-elf
 ARCH_CFLAGS ?= -march=rv64gc -mabi=lp64d
 QEMU        ?= qemu-system-riscv64
 QEMU_FLAGS  ?= -M virt -m 256M -nographic -serial mon:stdio
 
-# Allow toolchain prefix override for non-Homebrew installs
 CC_PREFIX ?=
-
 CC      = $(CC_PREFIX)$(CROSS)-gcc
 AS      = $(CC_PREFIX)$(CROSS)-gcc
 LD      = $(CC_PREFIX)$(CROSS)-gcc
 OBJCOPY = $(CC_PREFIX)$(CROSS)-objcopy
 OBJDUMP = $(CC_PREFIX)$(CROSS)-objdump
 
+# ── picolibc ───────────────────────────────────────────────────────────
+PICOLIBC_PREFIX ?= /opt/picolibc-rv64
+PICOLIBC_SPECS   = $(PICOLIBC_PREFIX)/lib/picolibc.specs
+
+# Preflight: catch missing picolibc early with a clear message.
+_check_picolibc:
+	@test -f $(PICOLIBC_SPECS) || { \
+	  echo ""; \
+	  echo "  picolibc not found at $(PICOLIBC_PREFIX)."; \
+	  echo "  Run:  scripts/setup-toolchain.sh"; \
+	  echo "  Or:   make BOARD=$(BOARD) PICOLIBC_PREFIX=/your/path"; \
+	  echo ""; \
+	  exit 1; }
+
+# ── beerlang submodule ─────────────────────────────────────────────────
 BEER_ROOT = beerlang
 
-# Auto-initialise the beerlang submodule if the working tree is empty.
-# The sentinel file is the first header that the rest of the build needs.
 $(BEER_ROOT)/include/beerlang.h:
 	git submodule update --init $(BEER_ROOT)
 
-# Beerlang source files — exclude the three files beeros replaces
 BEER_EXCLUDE = \
 	$(BEER_ROOT)/src/io/io_reactor.c \
 	$(BEER_ROOT)/src/io/reactor.c \
@@ -58,7 +72,8 @@ BEER_SRCS = $(filter-out $(BEER_EXCLUDE), \
 	$(BEER_ROOT)/vendor/mini-gmp.c \
 	$(BEER_ROOT)/vendor/ulog.c)
 
-PLATFORM_DIR = platform/$(BOARD)
+# ── platform + kernel sources ──────────────────────────────────────────
+PLATFORM_DIR  = platform/$(BOARD)
 
 PLATFORM_SRCS = \
 	$(PLATFORM_DIR)/boot/start.S \
@@ -69,40 +84,42 @@ KERNEL_SRCS = \
 	kernel/io_reactor_baremetal.c \
 	kernel/reactor_baremetal.c \
 	kernel/repl_uart.c \
-	kernel/posix_stubs.c \
-	kernel/clock_shim.c
+	kernel/syscall_stubs.c
 
 ALL_SRCS = $(BEER_SRCS) $(PLATFORM_SRCS) $(KERNEL_SRCS)
 
+# ── compiler flags ─────────────────────────────────────────────────────
 BOARD_UPPER = $(shell echo $(BOARD) | tr 'a-z-' 'A-Z_')
 
 CFLAGS = \
 	$(ARCH_CFLAGS) \
-	-O2 -ffreestanding -nostdlib -fno-strict-aliasing \
+	-O2 -ffreestanding -nostartfiles \
 	-Wall -Wextra \
+	--specs=$(PICOLIBC_SPECS) \
 	-I$(BEER_ROOT)/include \
 	-I$(BEER_ROOT)/vendor \
 	-I$(PLATFORM_DIR)/hal \
 	-Ikernel \
-	-D_DEFAULT_SOURCE \
 	-DBEEROS \
 	-D_BEEROS_$(BOARD_UPPER)
 
 LDFLAGS = \
 	-T $(PLATFORM_DIR)/boot/$(BOARD).ld \
-	-nostdlib \
+	--specs=$(PICOLIBC_SPECS) \
+	-nostartfiles \
 	-lgcc
 
+# ── build rules ────────────────────────────────────────────────────────
 BUILD_DIR = build/$(BOARD)
 
 OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(filter %.c,$(ALL_SRCS))) \
        $(patsubst %.S,$(BUILD_DIR)/%.o,$(filter %.S,$(ALL_SRCS)))
 
-.PHONY: all clean disasm run
+.PHONY: all clean disasm run _check_picolibc
 
-all: beeros.bin
+all: _check_picolibc beeros.bin
 
-run: beeros.elf
+run: _check_picolibc beeros.elf
 	$(QEMU) $(QEMU_FLAGS) -kernel beeros.elf
 
 beeros.elf: $(BEER_ROOT)/include/beerlang.h $(OBJS)

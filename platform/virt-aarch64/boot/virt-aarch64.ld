@@ -29,8 +29,9 @@ SECTIONS {
         _bss_end = .;
     } > RAM
 
-    /* 256 KiB stack above BSS */
     . = ALIGN(16);
-    . += 0x40000;
-    _stack_top = .;
+    _end = .;          /* picolibc _sbrk heap starts here */
+
+    /* 256 KiB stack at the top of RAM */
+    _stack_top = ORIGIN(RAM) + LENGTH(RAM);
 }

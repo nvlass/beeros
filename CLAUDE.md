@@ -49,6 +49,23 @@ uint64_t timer_read_us(void);        // microseconds since boot
 
 Each board also provides `board.mk` exporting `CROSS`, `ARCH_CFLAGS`, `QEMU`, `QEMU_FLAGS`.
 
+## C library: picolibc
+
+beeros uses [picolibc](https://github.com/picolibc/picolibc) as its C library.
+picolibc is a maintained bare-metal libc (successor to newlib) that provides
+`printf`, `malloc`, `memcpy`, etc. We only supply ~10 syscall stubs in
+`kernel/syscall_stubs.c` (`_write` → UART, `_sbrk` → static heap, `_exit` → halt, etc.).
+
+**One-time setup** (run on every new machine, takes ~10 min for picolibc build):
+```bash
+scripts/setup-toolchain.sh
+```
+
+picolibc is installed to `/opt/picolibc-rv64` by default. Override with:
+```bash
+make BOARD=virt-riscv PICOLIBC_PREFIX=/your/path
+```
+
 ## Build & run
 
 ```bash
@@ -63,9 +80,11 @@ make run  BOARD=virt-aarch64       # build + launch in QEMU
 make BOARD=<name>                  # cross-compile for a physical board
 ```
 
-Toolchain requirements:
-- `virt-riscv`: `riscv64-unknown-elf-gcc` — `brew install riscv-gnu-toolchain`
-- `virt-aarch64`: `aarch64-none-elf-gcc` — download from developer.arm.com or distro package
+Toolchain requirements (all installed by `scripts/setup-toolchain.sh`):
+- `riscv64-elf-gcc` — RISC-V cross compiler
+- `qemu` — system emulator
+- `picolibc` at `/opt/picolibc-rv64` — bare-metal C library
+- For AArch64: `aarch64-none-elf-gcc` from developer.arm.com (not in Homebrew)
 
 ## QEMU virt targets
 

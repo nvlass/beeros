@@ -24,13 +24,17 @@ Everything else (VM, compiler, GC, types, channels, actors, stdlib) compiles unc
 
 ```
 beeros/
-├── beerlang/          ← git submodule
+├── beerlang/          ← git submodule (VM, compiler, stdlib — never modified here)
 ├── platform/
 │   └── <board>/
 │       ├── boot/      ← start.S, linker script
-│       └── hal/       ← uart.c, timer.c (board-specific)
+│       └── hal/       ← uart.c, timer.c, gfx_ramfb.c (board-specific)
 ├── kernel/            ← board-agnostic bare-metal layer
-├── lib/               ← future: beeros.beer stdlib
+│   ├── gfx.h / gfx.c         ← framebuffer HAL (set_pixel, fill_rect, width/height)
+│   ├── gfx_natives.h / .c    ← beer.gfx namespace + lib/gfx.beer loader
+│   └── repl_uart.c            ← REPL; wires gfx under #ifdef BEEROS_GFX
+├── lib/
+│   └── gfx.beer       ← beerlang drawing library (Bresenham line/circle, rect, text)
 └── Makefile
 ```
 
@@ -45,6 +49,11 @@ void     uart_puts(const char *s);
 char     uart_getc(void);            // blocking
 int      uart_getc_nonblock(char*);  // returns 1 if char ready, 0 if not
 uint64_t timer_read_us(void);        // microseconds since boot
+```
+
+Optional for graphics:
+```c
+void gfx_init_ramfb(void);   // configure hardware framebuffer; calls gfx_init()
 ```
 
 Each board also provides `board.mk` exporting `CROSS`, `ARCH_CFLAGS`, `QEMU`, `QEMU_FLAGS`.
@@ -76,6 +85,11 @@ make run  BOARD=virt-riscv         # build + launch in QEMU (Ctrl+A X to quit)
 make BOARD=virt-aarch64            # build for AArch64 virt machine
 make run  BOARD=virt-aarch64       # build + launch in QEMU
 
+# Graphics build (virt-riscv only — opens Cocoa window + REPL on stdio)
+make BOARD=virt-riscv BEEROS_GFX=1          # build with beer.gfx
+make run-gfx BOARD=virt-riscv               # macOS (Cocoa)
+make run-gfx BOARD=virt-riscv DISPLAY_BACKEND=gtk   # Linux (GTK)
+
 # Real hardware (once sourced)
 make BOARD=<name>                  # cross-compile for a physical board
 ```
@@ -85,6 +99,22 @@ Toolchain requirements (all installed by `scripts/setup-toolchain.sh`):
 - `qemu` — system emulator
 - `picolibc` at `/opt/picolibc-rv64` — bare-metal C library
 - For AArch64: `aarch64-none-elf-gcc` from developer.arm.com (not in Homebrew)
+
+## Graphics driver (`beer.gfx`)
+
+Two-layer architecture, no beerlang submodule changes:
+
+**Layer 1 — C HAL** (`kernel/gfx.h`, `kernel/gfx.c`, `platform/<board>/hal/gfx_ramfb.c`):
+- `gfx_init(width, height, fb_addr)` — called by platform once the framebuffer address is known
+- `gfx_set_pixel(x, y, color)` / `gfx_fill_rect(x, y, w, h, color)` — XRGB8888 format
+- virt-riscv uses QEMU's `ramfb` device: one fw-cfg DMA handshake at boot maps the buffer to `0x84000000`
+
+**Layer 2 — `beer.gfx` namespace** (`kernel/gfx_natives.c`, `lib/gfx.beer`):
+- Natives registered at boot: `set-pixel!`, `fill-rect!`, `width`, `height`, `rgb`, `clear!`
+- `lib/gfx.beer` embedded at build time via `xxd -i` → `kernel/gfx_beer_blob.h`, then compiled and run using the same reader→compiler→scheduler pattern as the REPL
+- Higher-level functions in `lib/gfx.beer`: `line!` (Bresenham), `circle!` (midpoint), `rect!` (outlined), `text!` (8×8 bitmap font), `color`, `clear!`
+
+The blob generation rule: `make kernel/gfx_beer_blob.h` (runs automatically as part of `run-gfx`).
 
 ## QEMU virt targets
 

@@ -177,6 +177,11 @@ static void run_repl(void) {
 
         /* Parse */
         Reader* reader = reader_new(accum, "<repl>");
+        if (!reader) {
+            uart_puts("Error: out of memory\r\n");
+            accum_len = 0; accum[0] = '\0';
+            continue;
+        }
         Value all_forms = reader_read_all(reader);
         if (reader_has_error(reader)) {
             uart_puts("Read error: ");
@@ -236,7 +241,6 @@ static void run_repl(void) {
                 Value result = repl_task->vm->stack[repl_task->vm->stack_pointer - 1];
                 if (is_pointer(result)) object_retain(result);
                 vm_pop(repl_task->vm);
-                /* Print result — value_print_readable routes to stdout → uart via posix_stubs */
                 uart_puts("=> ");
                 value_print_readable(result);
                 uart_puts("\r\n");

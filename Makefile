@@ -23,7 +23,7 @@ BOARD ?= $(error Please set BOARD=<name> — e.g. make BOARD=virt-riscv)
 CROSS       ?= riscv64-elf
 ARCH_CFLAGS ?= -march=rv64gc -mabi=lp64d
 QEMU        ?= qemu-system-riscv64
-QEMU_FLAGS  ?= -M virt -m 256M -nographic -serial mon:stdio
+QEMU_FLAGS  ?= -M virt -m 256M -nographic -bios none -serial mon:stdio
 
 CC_PREFIX ?=
 CC      = $(CC_PREFIX)$(CROSS)-gcc
@@ -33,16 +33,12 @@ OBJCOPY = $(CC_PREFIX)$(CROSS)-objcopy
 OBJDUMP = $(CC_PREFIX)$(CROSS)-objdump
 
 # ── picolibc ───────────────────────────────────────────────────────────
-PICOLIBC_PREFIX ?= /opt/picolibc-rv64
-PICOLIBC_SPECS   = $(PICOLIBC_PREFIX)/lib/picolibc.specs
-
-# Preflight: catch missing picolibc early with a clear message.
+# picolibc.specs is installed into GCC's own specs directory by setup-toolchain.sh,
+# so --specs=picolibc.specs works without any path. We just check GCC can find it.
 _check_picolibc:
-	@test -f $(PICOLIBC_SPECS) || { \
+	@$(CC) --print-file-name=picolibc.specs | grep -q picolibc.specs || { \
 	  echo ""; \
-	  echo "  picolibc not found at $(PICOLIBC_PREFIX)."; \
-	  echo "  Run:  scripts/setup-toolchain.sh"; \
-	  echo "  Or:   make BOARD=$(BOARD) PICOLIBC_PREFIX=/your/path"; \
+	  echo "  picolibc not found. Run:  scripts/setup-toolchain.sh"; \
 	  echo ""; \
 	  exit 1; }
 
@@ -55,7 +51,10 @@ $(BEER_ROOT)/include/beerlang.h:
 BEER_EXCLUDE = \
 	$(BEER_ROOT)/src/io/io_reactor.c \
 	$(BEER_ROOT)/src/io/reactor.c \
-	$(BEER_ROOT)/src/repl/main.c
+	$(BEER_ROOT)/src/repl/main.c \
+	$(BEER_ROOT)/src/runtime/tcp.c \
+	$(BEER_ROOT)/src/runtime/udp.c \
+	$(BEER_ROOT)/src/runtime/shell.c
 
 BEER_SRCS = $(filter-out $(BEER_EXCLUDE), \
 	$(wildcard $(BEER_ROOT)/src/vm/*.c) \
@@ -84,7 +83,8 @@ KERNEL_SRCS = \
 	kernel/io_reactor_baremetal.c \
 	kernel/reactor_baremetal.c \
 	kernel/repl_uart.c \
-	kernel/syscall_stubs.c
+	kernel/syscall_stubs.c \
+	kernel/libgcc_shim.c
 
 ALL_SRCS = $(BEER_SRCS) $(PLATFORM_SRCS) $(KERNEL_SRCS)
 
@@ -94,19 +94,24 @@ BOARD_UPPER = $(shell echo $(BOARD) | tr 'a-z-' 'A-Z_')
 CFLAGS = \
 	$(ARCH_CFLAGS) \
 	-O2 -ffreestanding -nostartfiles \
+	-ffunction-sections -fdata-sections \
 	-Wall -Wextra \
-	--specs=$(PICOLIBC_SPECS) \
+	--specs=picolibc.specs \
 	-I$(BEER_ROOT)/include \
 	-I$(BEER_ROOT)/vendor \
 	-I$(PLATFORM_DIR)/hal \
 	-Ikernel \
+	-D_GNU_SOURCE \
+	-D_POSIX_MONOTONIC_CLOCK=200112L \
 	-DBEEROS \
-	-D_BEEROS_$(BOARD_UPPER)
+	-D_BEEROS_$(BOARD_UPPER) \
+	-DLOG_DISABLED
 
 LDFLAGS = \
 	-T $(PLATFORM_DIR)/boot/$(BOARD).ld \
-	--specs=$(PICOLIBC_SPECS) \
 	-nostartfiles \
+	-Wl,--gc-sections \
+	-Wl,--no-warn-rwx-segments \
 	-lgcc
 
 # ── build rules ────────────────────────────────────────────────────────

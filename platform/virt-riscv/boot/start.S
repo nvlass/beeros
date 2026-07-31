@@ -14,7 +14,23 @@ _start:
         /* Stack */
         la      sp, _stack_top
 
-        /* Clear BSS */
+        /* Enable FPU: mstatus.FS = 01 (Initial) — gcc uses fld/fsd to copy structs */
+        li      t0, 0x2000
+        csrs    mstatus, t0
+
+        /* Thread pointer — required for picolibc TLS (errno, etc.) */
+        la      tp, __tls_base
+
+        /* Clear .tbss (TLS zero-initialized data) */
+        la      t0, __tbss_start
+        la      t1, __tbss_end
+.Ltbss: bgeu    t0, t1, .Lbss_init
+        sd      zero, 0(t0)
+        addi    t0, t0, 8
+        j       .Ltbss
+
+        /* Clear .bss */
+.Lbss_init:
         la      t0, _bss_start
         la      t1, _bss_end
 .Lbss:  bgeu    t0, t1, .Lcall

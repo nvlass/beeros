@@ -86,6 +86,11 @@ KERNEL_SRCS = \
 	kernel/syscall_stubs.c \
 	kernel/libgcc_shim.c
 
+ifdef BEEROS_GFX
+KERNEL_SRCS   += kernel/gfx.c kernel/gfx_natives.c
+PLATFORM_SRCS += $(PLATFORM_DIR)/hal/gfx_ramfb.c
+endif
+
 ALL_SRCS = $(BEER_SRCS) $(PLATFORM_SRCS) $(KERNEL_SRCS)
 
 # ── compiler flags ─────────────────────────────────────────────────────
@@ -105,7 +110,8 @@ CFLAGS = \
 	-D_POSIX_MONOTONIC_CLOCK=200112L \
 	-DBEEROS \
 	-D_BEEROS_$(BOARD_UPPER) \
-	-DLOG_DISABLED
+	-DLOG_DISABLED \
+	$(if $(BEEROS_GFX),-DBEEROS_GFX)
 
 LDFLAGS = \
 	-T $(PLATFORM_DIR)/boot/$(BOARD).ld \
@@ -120,12 +126,26 @@ BUILD_DIR = build/$(BOARD)
 OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(filter %.c,$(ALL_SRCS))) \
        $(patsubst %.S,$(BUILD_DIR)/%.o,$(filter %.S,$(ALL_SRCS)))
 
-.PHONY: all clean disasm run _check_picolibc
+# ── blob header for embedded .beer libs ───────────────────────────────────
+kernel/gfx_beer_blob.h: lib/gfx.beer
+	xxd -i $< > $@
+
+.PHONY: all clean disasm run run-gfx _check_picolibc
 
 all: _check_picolibc beeros.bin
 
 run: _check_picolibc beeros.elf
 	$(QEMU) $(QEMU_FLAGS) -kernel beeros.elf
+
+# run-gfx: opens a display window + REPL on stdio
+# Uses -display cocoa on macOS; change to -display gtk on Linux.
+DISPLAY_BACKEND ?= cocoa
+run-gfx: _check_picolibc kernel/gfx_beer_blob.h
+	$(MAKE) BOARD=$(BOARD) BEEROS_GFX=1
+	$(QEMU) -M virt -m 256M -bios none \
+	  -device ramfb -display $(DISPLAY_BACKEND) \
+	  -serial stdio \
+	  -kernel beeros.elf
 
 beeros.elf: $(BEER_ROOT)/include/beerlang.h $(OBJS)
 	$(LD) $(CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS)
@@ -137,6 +157,8 @@ beeros.bin: beeros.elf
 disasm: beeros.elf
 	$(OBJDUMP) -d $< | less
 
+$(BUILD_DIR)/kernel/gfx_natives.o: kernel/gfx_beer_blob.h
+
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -146,4 +168,4 @@ $(BUILD_DIR)/%.o: %.S
 	$(AS) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf build/ beeros.elf beeros.bin
+	rm -rf build/ beeros.elf beeros.bin kernel/gfx_beer_blob.h

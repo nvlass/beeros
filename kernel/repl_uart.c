@@ -29,6 +29,12 @@
 #include "function.h"
 #include "beerlang.h"
 
+#ifdef BEEROS_GFX
+#include "gfx_natives.h"
+/* Provided by platform/$(BOARD)/hal/gfx_ramfb.c (or equivalent) */
+extern void gfx_init_ramfb(void);
+#endif
+
 #define INPUT_SIZE  4096
 #define ACCUM_SIZE  65536
 #define MAX_UNITS   256
@@ -269,6 +275,14 @@ void beeros_main(void) {
     memory_init();
     symbol_init();
     namespace_init();   /* tries core.beer; silent no-op without FS */
+
+#ifdef BEEROS_GFX
+    uart_puts("[beeros] gfx init...\r\n");
+    gfx_init_ramfb();
+    gfx_register_natives();
+    gfx_load_library();
+    uart_puts("[beeros] gfx ready\r\n");
+#endif
 
     uart_puts("[beeros] ready\r\n");
 

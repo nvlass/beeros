@@ -77,14 +77,17 @@ PLATFORM_DIR  = platform/$(BOARD)
 PLATFORM_SRCS = \
 	$(PLATFORM_DIR)/boot/start.S \
 	$(PLATFORM_DIR)/hal/uart.c \
-	$(PLATFORM_DIR)/hal/timer.c
+	$(PLATFORM_DIR)/hal/timer.c \
+	$(PLATFORM_DIR)/hal/plic.c \
+	$(PLATFORM_DIR)/hal/trap.S
 
 KERNEL_SRCS = \
 	kernel/io_reactor_baremetal.c \
 	kernel/reactor_baremetal.c \
 	kernel/repl_uart.c \
 	kernel/syscall_stubs.c \
-	kernel/libgcc_shim.c
+	kernel/libgcc_shim.c \
+	kernel/mem_natives.c
 
 ifdef BEEROS_GFX
 KERNEL_SRCS   += kernel/gfx.c kernel/gfx_natives.c
@@ -126,8 +129,11 @@ BUILD_DIR = build/$(BOARD)
 OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(filter %.c,$(ALL_SRCS))) \
        $(patsubst %.S,$(BUILD_DIR)/%.o,$(filter %.S,$(ALL_SRCS)))
 
-# ── blob header for embedded .beer libs ───────────────────────────────────
+# ── blob headers for embedded .beer libs ──────────────────────────────────
 kernel/gfx_beer_blob.h: lib/gfx.beer
+	xxd -i $< > $@
+
+kernel/mem_beer_blob.h: lib/mem.beer
 	xxd -i $< > $@
 
 .PHONY: all clean disasm run run-gfx _check_picolibc
@@ -158,6 +164,7 @@ disasm: beeros.elf
 	$(OBJDUMP) -d $< | less
 
 $(BUILD_DIR)/kernel/gfx_natives.o: kernel/gfx_beer_blob.h
+$(BUILD_DIR)/kernel/mem_natives.o: kernel/mem_beer_blob.h
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -168,4 +175,4 @@ $(BUILD_DIR)/%.o: %.S
 	$(AS) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf build/ beeros.elf beeros.bin kernel/gfx_beer_blob.h
+	rm -rf build/ beeros.elf beeros.bin kernel/gfx_beer_blob.h kernel/mem_beer_blob.h

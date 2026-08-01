@@ -29,6 +29,8 @@
 #include "function.h"
 #include "beerlang.h"
 
+#include "mem_natives.h"
+
 #ifdef BEEROS_GFX
 #include "gfx_natives.h"
 /* Provided by platform/$(BOARD)/hal/gfx_ramfb.c (or equivalent) */
@@ -275,6 +277,9 @@ void beeros_main(void) {
     memory_init();
     symbol_init();
     namespace_init();   /* tries core.beer; silent no-op without FS */
+
+    mem_register_natives();
+    mem_load_library();
 
 #ifdef BEEROS_GFX
     uart_puts("[beeros] gfx init...\r\n");

@@ -38,6 +38,17 @@ _start:
         addi    t0, t0, 8
         j       .Lbss
 
+        /* Wire M-mode trap vector (direct mode: all traps → trap_vector) */
+        la      t0, trap_vector
+        csrw    mtvec, t0
+
+        /* Enable M-mode external + timer interrupts in mie;
+         * mstatus.MIE is set last so interrupts only fire after mtvec is ready */
+        li      t0, (1 << 11) | (1 << 7)   /* MEIE | MTIE */
+        csrs    mie, t0
+        li      t0, (1 << 3)                /* mstatus.MIE */
+        csrs    mstatus, t0
+
 .Lcall: call    beeros_main
 
         /* beeros_main should never return; halt if it does */

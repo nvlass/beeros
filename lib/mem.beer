@@ -1,0 +1,88 @@
+;; beer.mem — MMIO convenience helpers for beeros device drivers
+;;
+;; Requires the beer.mem native namespace (registered by mem_natives.c).
+;; The native primitives (read8/16/32/64, write8!/16!/32!/64!, fence, fence-i,
+;; addr-of, irq-*) are usable immediately after (require 'beer.mem).
+
+(ns beer.mem)
+
+;; ── register access helpers ───────────────────────────────────────────────
+
+(defn rmw32!
+  "Read-modify-write: atomically update the bits covered by mask at addr.
+  Equivalent to: *addr = (*addr & ~mask) | (val & mask)"
+  [addr mask val]
+  (write32! addr
+            (bit-or (bit-and (read32 addr) (bit-not mask))
+                    (bit-and val mask))))
+
+;; ── polling helpers ───────────────────────────────────────────────────────
+
+(defn poll-set32
+  "Spin until bit (a power-of-2 mask) is set in the register at addr."
+  [addr bit]
+  (loop []
+    (when (= 0 (bit-and (read32 addr) bit))
+      (recur))))
+
+(defn poll-clear32
+  "Spin until bit (a power-of-2 mask) is clear in the register at addr."
+  [addr bit]
+  (loop []
+    (when (not= 0 (bit-and (read32 addr) bit))
+      (recur))))
+
+;; ── interrupt helpers ─────────────────────────────────────────────────────
+
+(defn irq-listen!
+  "Block until IRQ n fires, then invoke the registered handler (if any).
+  Use inside (spawn ...) to keep the REPL responsive while waiting.
+
+  Example:
+    (mem/irq-register! 10 (fn [] (println \"RX ready\")))
+    (mem/irq-enable! 10 1)
+    (await (spawn (fn [] (mem/irq-listen! 10))))"
+  [n]
+  (irq-wait! n)
+  (let [h (irq-handler n)]
+    (when h (h))))
+
+(defn irq-loop!
+  "Continuously wait for IRQ n and call the registered handler on each fire.
+  Runs forever; place in a spawned task.
+
+  Example:
+    (mem/irq-register! 10 (fn [] (println \"tick\")))
+    (mem/irq-enable! 10 1)
+    (spawn (fn [] (mem/irq-loop! 10)))"
+  [n]
+  (loop []
+    (irq-listen! n)
+    (recur)))
+
+;; ── QEMU virt-riscv MMIO addresses ───────────────────────────────────────
+;; Named constants so drivers read like specs, not like hex dumps.
+
+;; NS16550A UART0 (QEMU virt)
+(def uart0-base   0x10000000)
+(def uart0-rbr    0x10000000)   ; receive buffer / transmit holding
+(def uart0-ier    0x10000001)   ; interrupt enable
+(def uart0-iir    0x10000002)   ; interrupt identification (read)
+(def uart0-fcr    0x10000002)   ; FIFO control (write)
+(def uart0-lcr    0x10000003)   ; line control
+(def uart0-mcr    0x10000004)   ; modem control
+(def uart0-lsr    0x10000005)   ; line status
+(def uart0-msr    0x10000006)   ; modem status
+
+;; fw-cfg controller (QEMU virt)
+(def fw-cfg-base  0x10100000)
+(def fw-cfg-data  0x10100000)
+(def fw-cfg-sel   0x10100008)
+(def fw-cfg-dma-hi 0x10100010)
+(def fw-cfg-dma-lo 0x10100014)
+
+;; PLIC (RISC-V Platform-Level Interrupt Controller, QEMU virt)
+(def plic-base    0x0C000000)
+
+;; ramfb framebuffer (configured by beer.gfx when loaded)
+(def ramfb-base   0x84000000)

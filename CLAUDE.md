@@ -27,14 +27,16 @@ beeros/
 ├── beerlang/          ← git submodule (VM, compiler, stdlib — never modified here)
 ├── platform/
 │   └── <board>/
-│       ├── boot/      ← start.S, linker script
-│       └── hal/       ← uart.c, timer.c, gfx_ramfb.c (board-specific)
+│       ├── boot/      ← start.S (+ mtvec/MIE setup), linker script
+│       └── hal/       ← uart.c, timer.c, plic.c/h, trap.S, gfx_ramfb.c
 ├── kernel/            ← board-agnostic bare-metal layer
-│   ├── gfx.h / gfx.c         ← framebuffer HAL (set_pixel, fill_rect, width/height)
+│   ├── mem_natives.h / .c    ← beer.mem namespace (always loaded at boot)
+│   ├── gfx.h / gfx.c         ← framebuffer HAL
 │   ├── gfx_natives.h / .c    ← beer.gfx namespace + lib/gfx.beer loader
-│   └── repl_uart.c            ← REPL; wires gfx under #ifdef BEEROS_GFX
+│   └── repl_uart.c            ← REPL entry; boots mem then optional gfx
 ├── lib/
-│   └── gfx.beer       ← beerlang drawing library (Bresenham line/circle, rect, text)
+│   ├── mem.beer       ← MMIO helpers + named MMIO constants
+│   └── gfx.beer       ← beerlang drawing library
 └── Makefile
 ```
 
@@ -99,6 +101,44 @@ Toolchain requirements (all installed by `scripts/setup-toolchain.sh`):
 - `qemu` — system emulator
 - `picolibc` at `/opt/picolibc-rv64` — bare-metal C library
 - For AArch64: `aarch64-none-elf-gcc` from developer.arm.com (not in Homebrew)
+
+## MMIO driver layer (`beer.mem`)
+
+Always loaded at boot (no build flag). Lets drivers be written entirely in beerlang.
+
+**Natives (16):**
+```
+read8/16/32/64    (addr) → fixnum          volatile MMIO reads
+write8!/16!/32!/64! (addr val) → nil       volatile MMIO writes
+fence / fence-i   () → nil                 rw barrier / I-cache flush (arch-guarded)
+addr-of           (str-val) → fixnum       physical address of string's data[] — DMA buffers
+irq-register!     (n fn) → nil             store beerlang fn as IRQ n handler
+irq-handler       (n) → fn|nil             retrieve stored handler
+irq-enable!       (n prio) → nil           program PLIC priority + hart enable bit
+irq-pending?      (n) → bool               non-blocking pending check
+irq-wait!         (n) → nil                cooperative yield until IRQ n fires
+```
+
+**`lib/mem.beer` helpers (embedded, compiled at boot):**
+```
+rmw32!            (addr mask val)           read-modify-write register field
+poll-set32        (addr bit)                spin until bit set
+poll-clear32      (addr bit)                spin until bit clear
+irq-listen!       (n)                       irq-wait! + call handler once
+irq-loop!         (n)                       irq-listen! forever (for spawned tasks)
+```
+Also defines named MMIO constants: `uart0-*`, `fw-cfg-*`, `plic-base`, `ramfb-base`.
+
+**Interrupt model (cooperative):**
+- `trap.S` trap vector: saves all 31 GPRs → claims PLIC → sets `irq_pending` bit → completes PLIC → `mret`
+- `irq-wait!` native: polls volatile bitmask with `scheduler_run_one_tick` yield; clears bit when set
+- Handler calls happen in normal task context — scheduler is never entered from interrupt context
+- `start.S` sets `mtvec` and enables `mstatus.MIE` + `mie.MEIE` before `call beeros_main`
+
+**PLIC on QEMU virt-riscv:** base `0x0C000000`, hart 0 M-mode context (context 0).
+`plic_enable(irq, priority)` → sets priority register, enable bit, threshold=0, `csrs mie`.
+
+**`addr-of` layout:** assumes beerlang `String` layout: `{struct Object hdr; uint32_t byte_len; uint32_t char_count; char data[];}`. Returns `&data[0]`. Non-string values return 0.
 
 ## Graphics driver (`beer.gfx`)
 

@@ -53,6 +53,61 @@ Type (exit) to quit
 beer:1>
 ```
 
+## Raw hardware access (`beer.mem`)
+
+`beer.mem` is loaded at every boot — no build flag needed. It gives beerlang code
+direct access to hardware so you can write a new device driver entirely in beer
+without touching C.
+
+```clojure
+;; MMIO reads and writes (8/16/32/64-bit, volatile)
+(beer.mem/read8  0x10000005)        ;=> 96  (UART LSR: TX empty)
+(beer.mem/write8! 0x10000000 65)    ; writes 'A' directly to UART TX register
+
+;; Memory ordering
+(beer.mem/fence)                    ; RISC-V fence rw,rw  (dmb sy on AArch64)
+(beer.mem/fence-i)                  ; RISC-V fence.i      (isb on AArch64)
+
+;; DMA — get the physical address of a string's data region
+(def buf "...16 bytes...")
+(beer.mem/addr-of buf)              ;=> physical address, stable for buf's lifetime
+;; Pass that address to a DMA descriptor register via write32!
+
+;; Interrupts (cooperative — handler runs between REPL ticks)
+(beer.mem/irq-register! 10 (fn [] (println "UART RX ready")))
+(beer.mem/irq-enable! 10 1)                        ; priority 1 at the PLIC
+(await (spawn (fn [] (beer.mem/irq-loop! 10))))    ; background listener task
+```
+
+Helper macros from `lib/mem.beer` (also always available):
+```clojure
+(beer.mem/rmw32! base-addr mask val)   ; read-modify-write a register field
+(beer.mem/poll-set32   addr bit)       ; spin until bit is set
+(beer.mem/poll-clear32 addr bit)       ; spin until bit is clear
+(beer.mem/irq-listen! n)               ; wait for one IRQ, call handler, return
+(beer.mem/irq-loop! n)                 ; wait + call handler, repeat forever
+```
+
+Named MMIO constants are also defined: `beer.mem/uart0-base`, `beer.mem/plic-base`,
+`beer.mem/fw-cfg-base`, `beer.mem/ramfb-base`, etc.
+
+**Writing a driver entirely in beer:**
+```clojure
+;; Minimal NS16550A UART init — no C required
+(defn my-uart-init! [base baud]
+  (beer.mem/write8! (+ base 3) 0x80)             ; LCR: DLAB=1
+  (beer.mem/write8! base (quot 115200 baud))      ; DLL
+  (beer.mem/write8! (+ base 1) 0)                 ; DLH
+  (beer.mem/write8! (+ base 3) 0x03))             ; LCR: 8N1
+```
+
+**How interrupts work:** the M-mode trap handler (`platform/virt-riscv/hal/trap.S`)
+saves all 31 GPRs, claims the PLIC IRQ, sets a bit in a `volatile uint64_t` bitmask,
+completes the PLIC claim, and returns via `mret` — no beerlang call from interrupt
+context. `irq-wait!` polls that bitmask cooperatively (yielding to the scheduler),
+clears the bit when set, and returns to the beerlang caller. `irq-listen!` then
+calls the stored handler in normal task context.
+
 ## Graphics (QEMU virt-riscv)
 
 beeros includes a two-layer graphics stack built entirely in the beeros repo —
@@ -94,20 +149,24 @@ primitives. The `.beer` source is embedded in the binary at build time via `xxd 
 ```
 beerlang/          ← git submodule (the full Beerlang VM, unchanged)
 platform/<board>/
-  boot/start.S     ← entry: zero BSS, enable FPU, init TLS, call beeros_main()
+  boot/start.S     ← entry: stack, FPU, TLS, mtvec, MIE, call beeros_main()
   boot/<board>.ld  ← linker script (RAM origin, heap/stack, TLS sections)
   hal/uart.c       ← UART driver (putc/getc/puts)
   hal/timer.c      ← microsecond timer (clock_gettime shim)
+  hal/plic.c/h     ← (virt-riscv) RISC-V PLIC init (irq enable, claim, complete)
+  hal/trap.S       ← (virt-riscv) M-mode trap handler (save/restore 31 GPRs, mret)
   hal/gfx_ramfb.c  ← (virt-riscv) QEMU ramfb init via fw-cfg DMA
 kernel/
   syscall_stubs.c  ← picolibc syscall hooks (_write→uart, _sbrk→heap, etc.)
   io_reactor_baremetal.c  ← replaces beerlang's epoll/kqueue reactor
   reactor_baremetal.c
-  repl_uart.c      ← REPL entry point; wires up gfx when BEEROS_GFX=1
+  repl_uart.c      ← REPL entry point; boots mem + optional gfx namespaces
+  mem_natives.c    ← beer.mem namespace: MMIO, fence, addr-of, IRQ primitives
   gfx.h / gfx.c   ← board-agnostic framebuffer HAL
   gfx_natives.c    ← beer.gfx namespace registration + lib/gfx.beer loader
 lib/
-  gfx.beer         ← beerlang drawing library (line!, circle!, text!, …)
+  mem.beer         ← MMIO helpers: rmw32!, poll-set/clear32, irq-listen!, constants
+  gfx.beer         ← drawing library (line!, circle!, text!, …)
 ```
 
 The kernel layer provides exactly what picolibc's syscall interface expects (~10
@@ -116,10 +175,10 @@ picolibc unchanged.
 
 ## Board support
 
-| Board | Architecture | UART | Timer | Graphics |
-|---|---|---|---|---|
-| `virt-riscv` | RV64GC | NS16550A @ 0x10000000 | `rdtime` CSR (10 MHz) | ramfb via fw-cfg |
-| `virt-aarch64` | AArch64 | PL011 @ 0x09000000 | `CNTPCT_EL0` | — |
+| Board | Architecture | UART | Timer | PLIC | Graphics |
+|---|---|---|---|---|---|
+| `virt-riscv` | RV64GC | NS16550A @ 0x10000000 | `rdtime` CSR (10 MHz) | 0x0C000000 | ramfb via fw-cfg |
+| `virt-aarch64` | AArch64 | PL011 @ 0x09000000 | `CNTPCT_EL0` | — | — |
 
 Physical boards are added under `platform/<name>/` when hardware is sourced.
 Adding a new board = new `board.mk` + `start.S` + `<board>.ld` + `hal/` — no other

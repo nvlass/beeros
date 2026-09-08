@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-PICOLIBC_PREFIX="${PICOLIBC_PREFIX:-/opt/picolibc-rv64}"
+PICOLIBC_PREFIX="${PICOLIBC_PREFIX:-$(brew --prefix)/picolibc-rv64}"
 PICOLIBC_REPO="https://github.com/picolibc/picolibc"
 BUILD_DIR="$(mktemp -d)/picolibc-build"
 
@@ -37,6 +37,17 @@ need_brew python3
 need_brew git
 ok "Homebrew packages present"
 
+# picolibc's cross-file expects riscv64-unknown-elf-* names;
+# Homebrew's split formula uses riscv64-elf-* — bridge the gap with symlinks.
+info "Ensuring riscv64-unknown-elf-* symlinks..."
+BREW_BIN=/opt/homebrew/bin
+for tool in gcc g++ cpp objcopy objdump ar nm ranlib strip; do
+  src="${BREW_BIN}/riscv64-elf-${tool}"
+  dst="${BREW_BIN}/riscv64-unknown-elf-${tool}"
+  [ -f "$src" ] && [ ! -e "$dst" ] && ln -sf "$src" "$dst"
+done
+ok "riscv64-unknown-elf-gcc → riscv64-elf-gcc"
+
 # ── 2. picolibc ───────────────────────────────────────────────────────
 if [ -f "${PICOLIBC_PREFIX}/lib/picolibc.specs" ]; then
     ok "picolibc already installed at ${PICOLIBC_PREFIX}"
@@ -52,11 +63,7 @@ info "This takes about 10 minutes on first run."
 echo ""
 
 # Check we can write to the prefix (or will need sudo)
-NEED_SUDO=0
-if [ ! -d "${PICOLIBC_PREFIX}" ]; then
-    parent="$(dirname "${PICOLIBC_PREFIX}")"
-    [ -w "${parent}" ] || NEED_SUDO=1
-fi
+mkdir -p "${PICOLIBC_PREFIX}"
 
 info "Cloning picolibc..."
 git clone --depth=1 "${PICOLIBC_REPO}" "${BUILD_DIR}/src"
@@ -67,21 +74,15 @@ cd "${BUILD_DIR}/build"
 
 # do-riscv-configure builds a multilib picolibc for all standard RISC-V ABIs.
 # We set the prefix and disable tests to keep the build fast.
-python3 "${BUILD_DIR}/src/scripts/do-riscv-configure" \
-    -Dprefix="${PICOLIBC_PREFIX}" \
-    -Dtests=false \
-    -Dpicolib=false
+bash "${BUILD_DIR}/src/scripts/do-riscv-configure" \
+    --prefix="${PICOLIBC_PREFIX}" \
+    -Dtests=false
 
 info "Building..."
 ninja -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
 info "Installing to ${PICOLIBC_PREFIX}..."
-if [ "${NEED_SUDO}" -eq 1 ]; then
-    echo "  (sudo required to write to ${PICOLIBC_PREFIX})"
-    sudo ninja install
-else
-    ninja install
-fi
+ninja install
 
 cd /
 rm -rf "${BUILD_DIR}"

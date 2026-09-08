@@ -1,5 +1,7 @@
 build/
 beeros.elf
 beeros.bin
+*.map
 *~
 *.o
+kernel/*_beer_blob.h

@@ -25,13 +25,17 @@ SECTIONS {
     .bss : ALIGN(8) {
         _bss_start = .;
         *(.bss*)
+        *(.sbss*)
         *(COMMON)
+        *(SCOMMON)
         _bss_end = .;
     } > RAM
 
     . = ALIGN(16);
-    _end = .;          /* picolibc _sbrk heap starts here */
+    _end        = .;
+    __heap_start = .;
 
-    /* 256 KiB stack at the top of RAM */
-    _stack_top = ORIGIN(RAM) + LENGTH(RAM);
+    /* 256 KiB stack at the top of RAM; heap fills the gap */
+    _stack_top  = ORIGIN(RAM) + LENGTH(RAM);
+    __heap_end  = _stack_top - 0x40000;   /* leave 256 KiB for the stack */
 }

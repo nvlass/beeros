@@ -165,6 +165,47 @@ The blob generation rule: `make kernel/gfx_beer_blob.h` (runs automatically as p
 
 Both load the ELF via `-kernel beeros.elf` and map UART0 to stdio (`-serial mon:stdio -nographic`).
 
+## Roadmap
+
+1. **Filesystem support** — block device driver (virtio-blk under QEMU) + a filesystem
+   layer so beeros can load code/assets from storage instead of embedded blobs.
+2. **"Does it run Doom?"** — after filesystem *and* a keyboard/mouse input driver
+   (PS/2 or virtio-input under QEMU) land. Goal is a full engine rewrite in
+   idiomatic beerlang (pure functions, Clojure-style data), not a thin C-shim
+   port — using id Software's original `linuxdoom-1.10` release as the
+   reference implementation and `ozkl/doomgeneric` as the map of where the
+   platform boundary sits (5 callback functions: init, draw-frame, sleep,
+   get-ticks, get-key).
+
+   **Scope split** (based on file-size analysis of `linuxdoom-1.10`):
+   - `p_*` (playsim) + `r_*` (renderer) ≈ 35% of the whole codebase by bytes,
+     but ≈ 53% of the code that's actually algorithmic logic once you exclude
+     generated data tables (`info.c`/`tables.c`, ~27% of the codebase — those
+     translate near-mechanically into beerlang data literals), the platform
+     layer (`i_*`, replaced outright by `beer.gfx`/`beer.mem`/input driver),
+     and the zone allocator (`z_*`, dropped entirely — beerlang's refcounted
+     GC replaces it). **Nikolaos is doing `p_*` and `r_*` personally.**
+   - Rough function count in `p_*`+`r_*`: ~250-320 C functions (order of
+     magnitude ~280). `p_enemy.c` (monster AI) alone is ~60, mostly
+     near-mechanical per-monster-action transliteration. The renderer
+     (`r_bsp.c`/`r_segs.c`/`r_things.c`) is fewer, denser, hot-loop-heavy
+     functions — that's where idiomatic-pure-functional-without-wrecking-
+     performance is the real design problem.
+   - Still needed beyond p_*/r_* for a first playable milestone: `w_wad.c`
+     (WAD loader), a `g_game.c`-equivalent state machine (level load, game
+     state transitions, input→ticcmd), minimal HUD. Menu, automap,
+     intermission/finale screens, sound are post-milestone polish.
+   - Known hard part: Doom's playsim/renderer lean on mutable state that
+     resists naive pure-functional translation — mobjs are a doubly-linked
+     list mutated *during* traversal (spawn/remove mid-iteration), the BSP
+     walk accumulates into global arrays as it recurses, collision detection
+     collects into a shared mutable buffer mid-walk. Expect real per-
+     subsystem redesign, not transliteration, in those spots.
+   - Bonus: doubles as a real-world compiler/VM benchmark — real-time
+     software rasterization with allocation churn stresses tail-call
+     handling, GC/refcount overhead, and arithmetic throughput in ways no
+     microbenchmark does.
+
 ## Target hardware (TBD)
 
 Physical board not yet sourced. RISC-V candidates under consideration:

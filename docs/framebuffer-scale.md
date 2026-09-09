@@ -30,15 +30,15 @@ memory operation that isn't already a native, it falls off a cliff.
 
 ## Where this bites
 
-| Operation | Size | Byte-loop viable? |
-|---|---|---|
-| virtio-blk: read a 512 B sector into a buffer | 128 words | yes (barely) — but see below |
-| virtio-blk: read a 4 KB FS block | 1 K words | marginal, ~30 K VM ops |
-| virtio-input: event ring drain | tens of bytes | yes, trivially |
-| Load a 2 MB tar image off disk | 512 K words | **no** — needs bulk copy |
-| `beer.gfx` software blit / scale (Doom) | 16–64 K words | **no** |
-| Full framebuffer clear / fade / melt effect | 1 M words | **no** |
-| virtio-gpu: transfer_to_host_2d staging copy | 1 M+ words | **no** |
+| Operation                                     | Size          | Byte-loop viable?            |
+|-----------------------------------------------|---------------|------------------------------|
+| virtio-blk: read a 512 B sector into a buffer | 128 words     | yes (barely) — but see below |
+| virtio-blk: read a 4 KB FS block              | 1 K words     | marginal, ~30 K VM ops       |
+| virtio-input: event ring drain                | tens of bytes | yes, trivially               |
+| Load a 2 MB tar image off disk                | 512 K words   | **no** — needs bulk copy     |
+| `beer.gfx` software blit / scale (Doom)       | 16–64 K words | **no**                       |
+| Full framebuffer clear / fade / melt effect   | 1 M words     | **no**                       |
+| virtio-gpu: transfer_to_host_2d staging copy  | 1 M+ words    | **no**                       |
 
 The blk sector case is only "viable" if the device DMAs **directly into
 the buffer's backing store** (via `bytes/addr`) so there is no copy at
@@ -111,11 +111,15 @@ clipping) is beerlang.
   2–3 span/column natives.** The playsim (`p_*`) has no framebuffer-scale
   memory pressure and is pure-beerlang all the way down.
 
-## Also: fix `mem/addr-of` first
+## Fixed: `mem/addr-of` off-by-4
 
-`kernel/mem_natives.c`'s `MemString` mirror struct is missing the
-`uint32_t hash` field that real `String` has, so `mem/addr-of` returns
-`data[] - 4`. Not framebuffer-related but it will silently corrupt the
-first DMA that trusts it. Either add the field, or (better) switch the
-DMA-target story to the proposed `TYPE_BYTEBUFFER` with a documented
-layout and a real `bytes/addr` native. See `docs/beerlang-bytebuffer.md`.
+`kernel/mem_natives.c` used to mirror the private `String` struct and
+missed its `uint32_t hash` field, so `mem/addr-of` returned `data[] - 4`
+(verified: offset 32 vs 36). Fixed by calling `string_cstr()` instead of
+mirroring — beerlang computes the offset. Verified in QEMU:
+`(beer.mem/read8 (beer.mem/addr-of "ABCD"))` → 65.
+
+The structural lesson stands: don't re-mirror runtime-private structs.
+The `TYPE_BYTEBUFFER` proposal (`docs/beerlang-bytebuffer.md`) removes
+the hazard for good by giving DMA targets a documented layout and a
+first-class `bytes/addr` native.

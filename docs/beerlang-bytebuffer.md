@@ -34,12 +34,11 @@ Problems for driver / DMA use:
 4. **No length/position cursor.** virtio descriptor walking, FAT
    directory parsing, WAD lump reads all want a NIO-style
    position/limit cursor.
-5. **`mem/addr-of` already has a latent bug because of the layout.**
-   `kernel/mem_natives.c` mirrors the `String` struct but **omits the
-   `hash` field**, so the address it returns is 4 bytes short of the
-   real `data[]`. A dedicated type with a documented layout removes the
-   "mirror a private struct" hazard entirely. (Fix `mem_natives.c`
-   regardless — see `docs/framebuffer-scale.md`.)
+5. **`mem/addr-of` on a string means mirroring a runtime-private struct.**
+   `kernel/mem_natives.c` did exactly that and got it wrong (omitted the
+   `hash` field → returned `data[] - 4`); now fixed to call
+   `string_cstr()`. A dedicated type with a documented layout removes the
+   hazard entirely instead of trading one mirror for another.
 
 ## Design goals
 

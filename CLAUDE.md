@@ -138,7 +138,7 @@ Also defines named MMIO constants: `uart0-*`, `fw-cfg-*`, `plic-base`, `ramfb-ba
 **PLIC on QEMU virt-riscv:** base `0x0C000000`, hart 0 M-mode context (context 0).
 `plic_enable(irq, priority)` → sets priority register, enable bit, threshold=0, `csrs mie`.
 
-**`addr-of` layout:** assumes beerlang `String` layout: `{struct Object hdr; uint32_t byte_len; uint32_t char_count; char data[];}`. Returns `&data[0]`. Non-string values return 0.
+**`addr-of`:** returns `string_cstr(v)` cast to an integer — i.e. `&data[0]` of the string's inline byte buffer, computed by beerlang's own accessor (do *not* re-mirror the private `String` struct; it has a cached-`hash` field before `data[]`). Non-string values return 0.
 
 ## Graphics driver (`beer.gfx`)
 

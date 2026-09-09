@@ -24,6 +24,7 @@
 
 #include "namespace.h"
 #include "native.h"
+#include "bstring.h"
 #include "symbol.h"
 #include "memory.h"
 #include "value.h"
@@ -39,14 +40,6 @@
 
 /* Generated at build time: xxd -i lib/mem.beer > kernel/mem_beer_blob.h */
 #include "mem_beer_blob.h"
-
-/* ── String object layout (mirrors beerlang/src/types/string.c, private type) */
-typedef struct {
-    struct Object hdr;
-    uint32_t byte_len;
-    uint32_t char_count;
-    char data[];
-} MemString;
 
 /* ── IRQ dispatch table ─────────────────────────────────────────────────── */
 #define MAX_IRQS 64
@@ -174,14 +167,17 @@ static Value native_mem_fence_i(VM* vm, int argc, Value* argv) {
 /* ── DMA: addr-of ───────────────────────────────────────────────────────── */
 /* Returns the physical address of a beerlang string's char data[] region.
  * Use a string as a DMA-safe byte buffer: (def buf (make-string n \0))
- * The buffer is stable for its lifetime (refcounting GC, no compaction). */
+ * The buffer is stable for its lifetime (refcounting GC, no compaction).
+ *
+ * Uses string_cstr() rather than mirroring the private String struct — the
+ * layout has a cached-hash field between char_count and data[] that a hand
+ * mirror is liable to miss (it did: returned data[] - 4). */
 
 static Value native_mem_addr_of(VM* vm, int argc, Value* argv) {
     (void)vm;
     if (argc < 1 || !is_pointer(argv[0])) return make_fixnum(0);
     if (object_type(argv[0]) != TYPE_STRING) return make_fixnum(0);
-    MemString* s = (MemString*)argv[0].as.object;
-    return make_fixnum((int64_t)(uintptr_t)s->data);
+    return make_fixnum((int64_t)(uintptr_t)string_cstr(argv[0]));
 }
 
 /* ── Interrupt natives ──────────────────────────────────────────────────── */

@@ -178,3 +178,60 @@ No compiler changes. No opcode changes. No scheduler interaction.
 - Bounds checking: hard `vm_error` on out-of-range index (safe, costs a
   compare per access) vs. debug-only assert. Start with hard errors;
   profile later.
+
+## Rejected alternative: marshal beerlang vectors ↔ mem
+
+The tempting "no new type" option: drivers keep raw bytes in ordinary
+beerlang vectors (a vector of fixnums 0..255), and a C native validates
+and marshals between a vector and a raw address:
+
+```
+(mem/write-vec! addr vec)      ; validate every elem is fixnum 0..255, pack, write
+(mem/read-vec addr len)  → vec ; read, box each byte as a fixnum Value
+```
+
+**CPU cost is fine** — better than the pure-beerlang `mem/write8!` loop,
+in fact. Validation and packing are one fused pass (~5-10 host insns per
+byte), versus N × (VM dispatch + arg box/unbox + native call frame) for
+the loop. Roughly 10-30x faster than looping in beerlang. The "extra
+memcpy + extra validation pass = 2-3x" estimate is measuring against the
+wrong baseline; against the loop it's a speedup, and validation is not a
+separate pass.
+
+**It's the representation that kills it:**
+
+1. **16x memory.** Every byte is a 16-byte `Value` (tag + int64
+   payload). A 512 B sector → 8 KB vector; a 4 KB FS block → 64 KB; a
+   2 MB tar image → 32 MB; a 4 MB framebuffer → 64 MB+. The `elements`
+   array is also a second heap allocation separate from the object
+   header.
+
+2. **Construction from beerlang is O(N²).** beerlang vectors are
+   persistent at the language level — `(conj v x)` calls `vector_clone()`
+   internally (full copy every append), and there is no `assoc` on
+   vectors at all (maps/nil only). Building an N-byte vector by appending
+   is N array copies. The only linear construction is `(vector b0 …
+   bN)` with every value already in hand, or cons a list first (~40 B
+   per byte transiently) and `(vec list)` it.
+
+3. **Never a stable pointer.** `vector.elements` is `realloc`'d (moved)
+   on growth, and beerlang's roadmap replaces the flat array with a
+   HAMT/RRB tree — no contiguous run at all. A vector can never be a DMA
+   target; it is always a marshal, both directions.
+
+Structural sharing (persistent vector) would fix #2 but not #1 or #3 —
+bytes-as-`Value`s is 16x memory in any container shape, and a tree of
+32-element chunks still isn't contiguous. Orthogonal problem.
+
+**Where a vector-marshal native is still acceptable:** bulk,
+computed-all-at-once, read-mostly payloads up to ~tens of KB —
+`(mem/read-vec addr 512)` for a sector you parse once. Not for
+virtqueue descriptors (tiny multi-byte LE fields mutated in place every
+op) and not for anything framebuffer-sized.
+
+**If we want the "validated C bridge" idea anyway, marshal to a
+`String`, not a vector** — strings are already packed 1x bytes, already
+the `addr-of` target. `(mem/read-bytes addr len) → string` +
+`(mem/write-bytes! addr s)` gets ~90% of the ergonomics at 1/16th the
+memory and no O(N²) build. ByteBuffer is then a pure *ergonomics* layer
+on top (in-place LE field accessors, cursor), not a memory necessity.

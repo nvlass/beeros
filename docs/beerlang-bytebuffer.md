@@ -1,6 +1,16 @@
 # ByteBuffer — a mutable binary buffer type for beerlang
 
-Status: proposal / design note
+Status: **v1 implemented** in the beerlang repo (2026-09-30) — see
+`src/types/bytebuffer.c`, `src/runtime/bytes.c`, `tests/types/test_bytebuffer.c`.
+Matches this design as written, with the noted `capacity` field kept
+(not folded into `header.size`, which the free path needs untouched for
+allocation-size accounting).
+
+Not yet done: beeros-side wiring — `mem/addr-of` dispatching on
+ByteBuffer alongside String (see "Open questions" below), and actually
+using it from a driver, both follow-ups for when beeros driver work
+(virtio-blk etc., post-filesystem) needs it.
+
 Driver: beeros needs a real byte buffer to write drivers (virtio-blk,
 virtio-input, virtio-gpu) in beerlang instead of C.
 

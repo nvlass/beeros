@@ -6,10 +6,27 @@ Matches this design as written, with the noted `capacity` field kept
 (not folded into `header.size`, which the free path needs untouched for
 allocation-size accounting).
 
-Not yet done: beeros-side wiring — `mem/addr-of` dispatching on
-ByteBuffer alongside String (see "Open questions" below), and actually
-using it from a driver, both follow-ups for when beeros driver work
-(virtio-blk etc., post-filesystem) needs it.
+Done (2026-09-30): beeros-side wiring — `beerlang` submodule bumped to
+the commit synced onto `github.com/nvlass/beerlang` (public), and
+`mem/addr-of` in `kernel/mem_natives.c` now dispatches on `ByteBuffer`
+alongside `String`. Verified in QEMU (virt-riscv): boots clean, `(def b
+(beer.bytes/alloc 8)) (beer.bytes/put-u32le! b 0xDEADBEEF) (beer.bytes/hex
+b)` → `"ef be ad de 00 00 00 00"`, `(beer.mem/addr-of b) > 0`.
+
+Side note from the bump: the new upstream history dropped the old
+`#ifndef BEEROS` guards around `core_register_macros()` and the
+BEERPATH tar scan (previously added in `5ca048c`, a commit that turned
+out to be on a divergent private-remote line of history, not an
+ancestor of the public repo). Confirmed non-fatal: both now degrade
+gracefully through beeros's own `fopen`/`opendir` stubs (return
+NULL/ENOSYS), so beeros just prints one extra boot line — `NOTE:
+lib/core.beer not found, core macros not loaded` — instead of skipping
+the call outright. No functional change (core macros were never loaded
+on beeros either way). Not worth re-adding the guards for a cosmetic
+line; revisit if it gets annoying or if `core_register_macros` changes.
+
+Actually using ByteBuffer from a driver (virtio-blk etc., post-filesystem)
+is still a follow-up.
 
 Driver: beeros needs a real byte buffer to write drivers (virtio-blk,
 virtio-input, virtio-gpu) in beerlang instead of C.
@@ -181,6 +198,7 @@ No compiler changes. No opcode changes. No scheduler interaction.
 - `bytes/->string` on invalid UTF-8: return nil (like `string_from_buffer`)
   or a lossy replacement-char string? Prefer nil + a separate
   `bytes/->string-lossy`.
+- ~~Should `mem/addr-of` dispatch on ByteBuffer?~~ Done — see Status.
 - Should `beer.tar` / `require` learn to read from a ByteBuffer directly
   so a tar image pulled off disk needs no string round-trip? Yes,
   eventually — `load_from_buffer` already takes a `char*`, so it's a

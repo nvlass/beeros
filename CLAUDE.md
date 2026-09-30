@@ -111,7 +111,7 @@ Always loaded at boot (no build flag). Lets drivers be written entirely in beerl
 read8/16/32/64    (addr) → fixnum          volatile MMIO reads
 write8!/16!/32!/64! (addr val) → nil       volatile MMIO writes
 fence / fence-i   () → nil                 rw barrier / I-cache flush (arch-guarded)
-addr-of           (str-val) → fixnum       physical address of string's data[] — DMA buffers
+addr-of           (str-val|bytebuffer) → fixnum  physical address of data — DMA buffers
 irq-register!     (n fn) → nil             store beerlang fn as IRQ n handler
 irq-handler       (n) → fn|nil             retrieve stored handler
 irq-enable!       (n prio) → nil           program PLIC priority + hart enable bit
@@ -138,7 +138,7 @@ Also defines named MMIO constants: `uart0-*`, `fw-cfg-*`, `plic-base`, `ramfb-ba
 **PLIC on QEMU virt-riscv:** base `0x0C000000`, hart 0 M-mode context (context 0).
 `plic_enable(irq, priority)` → sets priority register, enable bit, threshold=0, `csrs mie`.
 
-**`addr-of`:** returns `string_cstr(v)` cast to an integer — i.e. `&data[0]` of the string's inline byte buffer, computed by beerlang's own accessor (do *not* re-mirror the private `String` struct; it has a cached-`hash` field before `data[]`). Non-string values return 0.
+**`addr-of`:** dispatches on type. For a `ByteBuffer` (from `beer.bytes/alloc` — the preferred DMA buffer: mutable, not UTF-8-validated, not NUL-padded), returns `bytebuffer_data(v)`. For a `String`, returns `string_cstr(v)` — i.e. `&data[0]` of its inline byte buffer, computed by beerlang's own accessor (do *not* re-mirror the private `String` struct; it has a cached-`hash` field before `data[]`). Other values return 0.
 
 ## Graphics driver (`beer.gfx`)
 

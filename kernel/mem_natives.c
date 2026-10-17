@@ -38,6 +38,7 @@
 #include "vector.h"
 #include "uart.h"
 #include "plic.h"
+#include "blob_loader.h"
 
 /* Generated at build time: xxd -i lib/mem.beer > kernel/mem_beer_blob.h */
 #include "mem_beer_blob.h"
@@ -55,20 +56,6 @@ void mem_trap_handler(void) {
         plic_complete(irq);
     }
     /* Spurious or out-of-range IRQ: just complete with 0 (no-op for PLIC) */
-}
-
-/* ── local retain list ──────────────────────────────────────────────────── */
-#define MEM_MAX_UNITS 16
-static CompiledCode* g_units[MEM_MAX_UNITS];
-static Value*        g_consts[MEM_MAX_UNITS];
-static int           g_n_units = 0;
-
-static void mem_retain_unit(CompiledCode* code, Value* consts) {
-    if (g_n_units < MEM_MAX_UNITS) {
-        g_units[g_n_units]  = code;
-        g_consts[g_n_units] = consts;
-        g_n_units++;
-    }
 }
 
 /* ── reg() helper — replicated from core.c (static there) ──────────────── */
@@ -287,70 +274,5 @@ void mem_register_natives(void) {
 /* ── load embedded lib/mem.beer ─────────────────────────────────────────── */
 
 void mem_load_library(void) {
-    char* src = malloc(lib_mem_beer_len + 1);
-    if (!src) return;
-    memcpy(src, lib_mem_beer, lib_mem_beer_len);
-    src[lib_mem_beer_len] = '\0';
-
-    Reader* reader = reader_new(src, "lib/mem.beer");
-    free(src);
-    if (!reader) return;
-
-    Value forms = reader_read_all(reader);
-    if (reader_has_error(reader)) {
-        uart_puts("[mem] read error: ");
-        uart_puts(reader_error_msg(reader));
-        uart_puts("\r\n");
-        reader_free(reader);
-        object_release(forms);
-        return;
-    }
-    reader_free(reader);
-
-    size_t n = vector_length(forms);
-    for (size_t fi = 0; fi < n; fi++) {
-        Value form = vector_get(forms, fi);
-
-        Compiler* compiler = compiler_new("lib/mem.beer");
-        CompiledCode* code = compile(compiler, form);
-
-        if (compiler_has_error(compiler)) {
-            uart_puts("[mem] compile error: ");
-            uart_puts(compiler_error_msg(compiler));
-            uart_puts("\r\n");
-            compiled_code_free(code);
-            compiler_free(compiler);
-            continue;
-        }
-        compiler_free(compiler);
-
-        int nc = (int)vector_length(code->constants);
-        Value* consts = malloc((size_t)nc * sizeof(Value));
-        if (!consts) { compiled_code_free(code); continue; }
-
-        for (int i = 0; i < nc; i++) consts[i] = vector_get(code->constants, i);
-        for (int i = 0; i < nc; i++) {
-            if (is_function(consts[i])) {
-                function_set_code(consts[i], code->bytecode, (int)code->code_size,
-                                  consts, nc);
-                object_make_immortal(consts[i]);
-            }
-        }
-
-        Value tv = task_new_from_code(code->bytecode, (int)code->code_size,
-                                      consts, nc, global_scheduler);
-        Task* t = task_get(tv);
-        scheduler_run_task_to_completion(global_scheduler, t);
-
-        if (t->vm->error) {
-            uart_puts("[mem] runtime error: ");
-            uart_puts(t->vm->error_msg);
-            uart_puts("\r\n");
-        }
-
-        object_release(tv);
-        mem_retain_unit(code, consts);
-    }
-
-    object_release(forms);
+    beer_load_blob(lib_mem_beer, lib_mem_beer_len, "lib/mem.beer", NULL);
 }

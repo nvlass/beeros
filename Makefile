@@ -87,6 +87,7 @@ KERNEL_SRCS = \
 	kernel/repl_uart.c \
 	kernel/syscall_stubs.c \
 	kernel/libgcc_shim.c \
+	kernel/blob_loader.c \
 	kernel/mem_natives.c
 
 ifdef BEEROS_GFX
@@ -136,6 +137,11 @@ kernel/gfx_beer_blob.h: lib/gfx.beer
 kernel/mem_beer_blob.h: lib/mem.beer
 	xxd -i $< > $@
 
+# Fixed array name: xxd -i would derive it from the submodule path
+kernel/core_beer_blob.h: $(BEER_ROOT)/lib/core.beer
+	{ echo 'unsigned char core_beer[] = {'; xxd -i < $<; echo '};'; \
+	  echo "unsigned int core_beer_len = $$(wc -c < $< | tr -d ' ');"; } > $@
+
 .PHONY: all clean disasm run run-gfx _check_picolibc
 
 all: _check_picolibc beeros.bin
@@ -165,6 +171,7 @@ disasm: beeros.elf
 
 $(BUILD_DIR)/kernel/gfx_natives.o: kernel/gfx_beer_blob.h
 $(BUILD_DIR)/kernel/mem_natives.o: kernel/mem_beer_blob.h
+$(BUILD_DIR)/kernel/repl_uart.o: kernel/core_beer_blob.h
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -175,4 +182,4 @@ $(BUILD_DIR)/%.o: %.S
 	$(AS) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf build/ beeros.elf beeros.bin kernel/gfx_beer_blob.h kernel/mem_beer_blob.h
+	rm -rf build/ beeros.elf beeros.bin kernel/gfx_beer_blob.h kernel/mem_beer_blob.h kernel/core_beer_blob.h

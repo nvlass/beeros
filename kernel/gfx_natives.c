@@ -27,23 +27,10 @@
 #include "vector.h"
 #include "gfx.h"
 #include "uart.h"
+#include "blob_loader.h"
 
 /* Generated at build time: xxd -i lib/gfx.beer > kernel/gfx_beer_blob.h */
 #include "gfx_beer_blob.h"
-
-/* ── local retain list (same leak-over-UAF trade-off as repl_uart.c) ──── */
-#define GFX_MAX_UNITS 32
-static CompiledCode* g_units[GFX_MAX_UNITS];
-static Value*        g_consts[GFX_MAX_UNITS];
-static int           g_n_units = 0;
-
-static void gfx_retain_unit(CompiledCode* code, Value* consts) {
-    if (g_n_units < GFX_MAX_UNITS) {
-        g_units[g_n_units]  = code;
-        g_consts[g_n_units] = consts;
-        g_n_units++;
-    }
-}
 
 /* ── 4-line helper replicated from core.c (static there) ──────────────── */
 static void reg(Namespace* ns, const char* name, NativeFn fn) {
@@ -124,71 +111,5 @@ void gfx_register_natives(void) {
 /* ── load embedded lib/gfx.beer ─────────────────────────────────────────── */
 
 void gfx_load_library(void) {
-    /* xxd -i produces `lib_gfx_beer[]` (no NUL); make a NUL-terminated copy */
-    char* src = malloc(lib_gfx_beer_len + 1);
-    if (!src) return;
-    memcpy(src, lib_gfx_beer, lib_gfx_beer_len);
-    src[lib_gfx_beer_len] = '\0';
-
-    Reader* reader = reader_new(src, "lib/gfx.beer");
-    free(src);
-    if (!reader) return;
-
-    Value forms = reader_read_all(reader);
-    if (reader_has_error(reader)) {
-        uart_puts("[gfx] read error: ");
-        uart_puts(reader_error_msg(reader));
-        uart_puts("\r\n");
-        reader_free(reader);
-        object_release(forms);
-        return;
-    }
-    reader_free(reader);
-
-    size_t n = vector_length(forms);
-    for (size_t fi = 0; fi < n; fi++) {
-        Value form = vector_get(forms, fi);
-
-        Compiler* compiler = compiler_new("lib/gfx.beer");
-        CompiledCode* code = compile(compiler, form);
-
-        if (compiler_has_error(compiler)) {
-            uart_puts("[gfx] compile error: ");
-            uart_puts(compiler_error_msg(compiler));
-            uart_puts("\r\n");
-            compiled_code_free(code);
-            compiler_free(compiler);
-            continue;
-        }
-        compiler_free(compiler);
-
-        int nc = (int)vector_length(code->constants);
-        Value* consts = malloc((size_t)nc * sizeof(Value));
-        if (!consts) { compiled_code_free(code); continue; }
-
-        for (int i = 0; i < nc; i++) consts[i] = vector_get(code->constants, i);
-        for (int i = 0; i < nc; i++) {
-            if (is_function(consts[i])) {
-                function_set_code(consts[i], code->bytecode, (int)code->code_size,
-                                  consts, nc);
-                object_make_immortal(consts[i]);
-            }
-        }
-
-        Value tv = task_new_from_code(code->bytecode, (int)code->code_size,
-                                      consts, nc, global_scheduler);
-        Task* t = task_get(tv);
-        scheduler_run_task_to_completion(global_scheduler, t);
-
-        if (t->vm->error) {
-            uart_puts("[gfx] runtime error: ");
-            uart_puts(t->vm->error_msg);
-            uart_puts("\r\n");
-        }
-
-        object_release(tv);
-        gfx_retain_unit(code, consts);
-    }
-
-    object_release(forms);
+    beer_load_blob(lib_gfx_beer, lib_gfx_beer_len, "lib/gfx.beer", NULL);
 }

@@ -30,6 +30,8 @@
 #include "beerlang.h"
 
 #include "mem_natives.h"
+#include "blob_loader.h"
+#include "core_beer_blob.h"
 
 #ifdef BEEROS_GFX
 #include "gfx_natives.h"
@@ -231,6 +233,9 @@ static void run_repl(void) {
                     function_set_code(constants[i],
                                       code->bytecode, (int)code->code_size,
                                       constants, n_constants);
+                    /* Free symbols resolve in the defining ns, not the caller's */
+                    Namespace* cur = namespace_registry_current(global_namespace_registry);
+                    if (cur) function_set_ns_name(constants[i], cur->name);
                     object_make_immortal(constants[i]);
                 }
             }
@@ -276,7 +281,10 @@ void beeros_main(void) {
 
     memory_init();
     symbol_init();
-    namespace_init();   /* tries core.beer; silent no-op without FS */
+    namespace_init();   /* its own core.beer load fails (no FS) and prints a NOTE */
+    /* defn/ns/let/when/loop... are core.beer macros; mem.beer and gfx.beer need them */
+    beer_load_blob(core_beer, core_beer_len, "lib/core.beer", "beer.core");
+    uart_puts("[beeros] core macros loaded (embedded lib/core.beer)\r\n");
 
     mem_register_natives();
     mem_load_library();

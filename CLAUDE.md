@@ -199,7 +199,7 @@ geometry; filesystems only ever see the map. Always built (no flag).
 
 Attach a disk: `make run BOARD=virt-riscv DISK=disk.img` (raw image), or
 `make run-disk` to build `build/disk.img` from `rootfs/` (+ beerlang's
-`string`/`json`/`test` libs in `/lib/beer`) and boot with it.
+`string`/`json`/`test`/`digest`/`crypto`/`tar` libs in `/lib/beer`) and boot with it.
 
 ## Filesystem (`beer.ext2`)
 

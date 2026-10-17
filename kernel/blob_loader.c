@@ -11,6 +11,7 @@
 #include "memory.h"
 #include "scheduler.h"
 #include "symbol.h"
+#include "hashmap.h"
 #include "task.h"
 #include "vector.h"
 #include "vm.h"
@@ -63,6 +64,22 @@ static void run_form(Value form, const char* name) {
     /* code and consts are never freed: functions defined here point into them */
 }
 
+/* Record ns in *loaded-libs* (beer.core), as require does after loading a
+ * file, so (require 'beer.input) finds embedded namespaces already loaded */
+static void mark_loaded(const char* ns_name) {
+    Namespace* core = namespace_registry_get_core(global_namespace_registry);
+    if (!core || !ns_name) return;
+    Value sym = symbol_intern("*loaded-libs*");
+    Var* var = namespace_lookup(core, sym);
+    Value libs = var ? var_get_value(var) : VALUE_NIL;
+    if (is_nil(libs)) {
+        libs = hashmap_create_default();
+        var = namespace_define(core, sym, libs);
+        object_release(libs);
+    }
+    hashmap_set(libs, keyword_intern(ns_name), VALUE_TRUE);
+}
+
 void beer_load_blob(const unsigned char* data, unsigned int len,
                     const char* name, const char* home_ns) {
     Namespace* saved = namespace_registry_current(global_namespace_registry);
@@ -88,7 +105,12 @@ void beer_load_blob(const unsigned char* data, unsigned int len,
 
     if (!failed) {
         size_t n = vector_length(forms);
-        for (size_t i = 0; i < n; i++) run_form(vector_get(forms, i), name);
+        for (size_t i = 0; i < n; i++) {
+            run_form(vector_get(forms, i), name);
+            /* A file's (ns ...) makes its namespace current */
+            Namespace* cur = namespace_registry_current(global_namespace_registry);
+            if (cur && cur != saved) mark_loaded(cur->name);
+        }
     }
     object_release(forms);
 

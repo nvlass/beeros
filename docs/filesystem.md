@@ -119,14 +119,17 @@ type plugs in through `beer.fs/impls` (`{:ext2 {:ls ... :slurp ...}}`).
 `beer.core/*loaded-libs*`, and then beerlang's own `require` applies
 `:as` / `:refer` (it skips loading what is already marked). The wrapper
 also accepts Clojure's vector form `(require '[foo.bar :as fb])`, which the
-native doesn't. `ns` forms go through it too. Delete the wrapper once
+native doesn't. `ns` forms go through it too. Namespaces from the embedded
+libraries (`beer.input`, `beer.fs`, ...) are marked loaded by the boot
+loader, so requiring them is a no-op plus `:as` / `:refer`. Delete the wrapper once
 beerlang has a source-lookup hook (requested in beerlang's TODO.md).
 
 ### Root filesystem
 
 `make disk` builds `build/disk.img` (ext2, 16 MB) from `rootfs/` plus
-beerlang's pure libraries (`beer.string`, `beer.json`, `beer.test` into
-`/lib/beer/`); `make run-disk` boots with it. Layout: `/etc` (`init.beer`,
+beerlang's pure libraries (`beer.string`, `json`, `test`, `digest`, `crypto`, `tar` into
+`/lib/beer/`; natives that open host files, like `beer.digest/random-bytes`
+reading `/dev/urandom`, still fail); `make run-disk` boots with it. Layout: `/etc` (`init.beer`,
 `beeros.edn`), `/lib`, `/bin`, `/share/fonts`, `/var`. After all embedded
 libraries load, `/etc/init.beer` runs (`beer.fs/run-init!`); errors in it
 are printed, not fatal.

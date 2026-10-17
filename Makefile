@@ -158,12 +158,12 @@ MKE2FS     ?= $(firstword $(wildcard /opt/homebrew/opt/e2fsprogs/sbin/mke2fs /us
 DISK_SIZE  ?= 16M
 DISK_IMG    = build/disk.img
 ROOTFS_STAGE = build/rootfs
-ROOTFS_BEERLANG_LIBS = string json test
+ROOTFS_BEERLANG_LIBS = string json test digest crypto tar
 ROOTFS_DIRS = bin etc lib/beer share/fonts var
 
 disk: $(DISK_IMG)
 
-$(DISK_IMG): $(shell find rootfs -type f) $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS))
+$(DISK_IMG): Makefile $(shell find rootfs -type f) $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS))
 	rm -rf $(ROOTFS_STAGE) $@
 	mkdir -p $(addprefix $(ROOTFS_STAGE)/,$(ROOTFS_DIRS))
 	cp -R rootfs/. $(ROOTFS_STAGE)/

@@ -58,6 +58,7 @@ beeros/
 │   ├── mem.beer       ← MMIO helpers + named MMIO constants
 │   ├── blk.beer       ← beer.blk: block-device maps, registry, error policy
 │   ├── virtio_blk.beer ← beer.virtio-blk: virtio-blk driver in beerlang (boot default)
+│   ├── ext2.beer      ← beer.ext2: read-only ext2 over a block-device map
 │   └── gfx.beer       ← beerlang drawing library
 └── Makefile
 ```
@@ -182,6 +183,17 @@ geometry; filesystems only ever see the map. Always built (no flag).
   the REPL; one driver owns a device at a time.
 
 Attach a disk: `make run BOARD=virt-riscv DISK=disk.img` (raw image).
+
+## Filesystem (`beer.ext2`)
+
+ext2, chosen over FAT32/littlefs/etc. — comparison and staged plan in
+`docs/filesystem.md`. `lib/ext2.beer` is read-only so far:
+`(beer.ext2/mount dev)`, `ls`, `slurp`, `read-bytes`, `stat`/`lstat`,
+`readlink`. Refuses incompat features other than `filetype` (so ext3/4
+images are rejected, not misread). Build images with e2fsprogs
+(`brew install e2fsprogs`, keg-only in `/opt/homebrew/opt/e2fsprogs/sbin`):
+`mke2fs -t ext2 -d rootdir/ disk.img 8M`. QEMU needs `-m 256M` (from
+`board.mk`) when invoked by hand.
 
 ## Graphics driver (`beer.gfx`)
 

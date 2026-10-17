@@ -28,6 +28,7 @@
 
 #include "blk_beer_blob.h"
 #include "virtio_blk_beer_blob.h"
+#include "ext2_beer_blob.h"
 
 static void reg(Namespace* ns, const char* name, NativeFn fn) {
     Value f = native_function_new(-1, fn, name);
@@ -127,4 +128,5 @@ void blk_register_natives(void) {
 void blk_load_library(void) {
     beer_load_blob(lib_blk_beer, lib_blk_beer_len, "lib/blk.beer", NULL);
     beer_load_blob(lib_virtio_blk_beer, lib_virtio_blk_beer_len, "lib/virtio_blk.beer", NULL);
+    beer_load_blob(lib_ext2_beer, lib_ext2_beer_len, "lib/ext2.beer", NULL);
 }

@@ -1,0 +1,315 @@
+;; beer.ext2 — read-only ext2 (see docs/filesystem.md)
+;;
+;; Works on any block-device map from beer.blk. Nothing is cached yet:
+;; every call reads what it needs from the device.
+;;
+;;   (def fs (beer.ext2/mount (beer.blk/device "virtio0")))
+;;   (beer.ext2/ls fs "/")
+;;   (beer.ext2/slurp fs "/hello.txt")
+
+(ns beer.ext2)
+
+(def magic    0xEF53)
+(def root-ino 2)
+
+;; superblock (byte 1024 of the device)
+(def sb-inodes-count     0)
+(def sb-blocks-count     4)
+(def sb-first-data-block 20)
+(def sb-log-block-size   24)
+(def sb-blocks-per-group 32)
+(def sb-inodes-per-group 40)
+(def sb-magic            56)
+(def sb-rev-level        76)
+(def sb-inode-size       88)
+(def sb-feature-compat   92)
+(def sb-feature-incompat 96)
+(def sb-feature-ro       100)
+(def sb-volume-name      120)
+
+(def incompat-filetype 0x2)
+(def incompat-supported incompat-filetype)
+(def ro-large-file 0x2)
+
+;; inode
+(def i-mode     0)
+(def i-uid      2)
+(def i-size     4)
+(def i-mtime    16)
+(def i-gid      24)
+(def i-links    26)
+(def i-blocks   28)   ; in 512-byte units
+(def i-block    40)   ; 15 × u32: 12 direct, single, double, triple indirect
+(def i-file-acl 104)
+(def i-size-hi  108)
+
+(def max-symlink-hops 40)
+(def max-run-bytes    65536)   ; largest single device transfer
+
+(defn u8  [b o] (beer.bytes/u8 b o))
+(defn u16 [b o] (beer.bytes/u16le b o))
+(defn u32 [b o] (beer.bytes/u32le b o))
+
+(defn ceil-div [a b] (quot (+ a (dec b)) b))
+
+(defn fail! [op path reason]
+  (throw (ex-info (str "ext2: " (name op) " " path ": " (name reason))
+                  {:op op :path path :reason reason})))
+
+;; ── blocks ────────────────────────────────────────────────────────────────
+
+(defn read-blocks-into!
+  "Read n consecutive fs blocks from block b into buf at byte off."
+  [fs b n buf off]
+  ((:read! (:dev fs)) (* b (:spb fs)) (* n (:spb fs)) buf off))
+
+(defn read-block [fs b]
+  (let [buf (beer.bytes/alloc (:block-size fs))]
+    (when (not= b 0) (read-blocks-into! fs b 1 buf 0))   ; 0 = hole: zeros
+    buf))
+
+;; ── mount ─────────────────────────────────────────────────────────────────
+
+(defn read-superblock [dev]
+  (let [ss (:sector-size dev)
+        n  (max 1 (quot 1024 ss))
+        buf (beer.blk/read-sectors dev (quot 1024 ss) n)]
+    buf))
+
+(defn mode->type [mode]
+  (let [t (bit-and mode 0xF000)]
+    (cond (= t 0x4000) :dir
+          (= t 0x8000) :file
+          (= t 0xA000) :symlink
+          :else        :other)))
+
+(defn read-groups [fs ngroups]
+  (let [bs  (:block-size fs)
+        nb  (ceil-div (* ngroups 32) bs)
+        buf (beer.bytes/alloc (* nb bs))]
+    (read-blocks-into! fs (inc (:first-data-block fs)) nb buf 0)
+    (vec (map (fn [g]
+                (let [o (* g 32)]
+                  {:block-bitmap (u32 buf o)
+                   :inode-bitmap (u32 buf (+ o 4))
+                   :inode-table  (u32 buf (+ o 8))}))
+              (range ngroups)))))
+
+(defn volume-name [sb]
+  (let [raw (beer.bytes/slice sb sb-volume-name 16)
+        len (loop [i 0] (if (or (= i 16) (= 0 (u8 raw i))) i (recur (inc i))))]
+    (beer.bytes/->string (beer.bytes/slice raw 0 len))))
+
+(defn mount
+  "Read the superblock and group descriptors of the ext2 filesystem on dev.
+  Throws on anything that isn't a plain ext2 this code understands."
+  [dev]
+  (let [sb  (read-superblock dev)
+        nm  (:name dev)]
+    (when (not= (u16 sb sb-magic) magic) (fail! :mount nm :not-ext2))
+    (let [rev      (u32 sb sb-rev-level)
+          incompat (if (>= rev 1) (u32 sb sb-feature-incompat) 0)
+          ro       (if (>= rev 1) (u32 sb sb-feature-ro) 0)
+          bs       (bit-shift-left 1024 (u32 sb sb-log-block-size))
+          fdb      (u32 sb sb-first-data-block)
+          bpg      (u32 sb sb-blocks-per-group)]
+      (when (not= 0 (bit-and incompat (bit-not incompat-supported)))
+        (fail! :mount nm :unsupported-features))
+      (when (< bs (:sector-size dev)) (fail! :mount nm :block-smaller-than-sector))
+      (let [fs {:dev              dev
+                :name             nm
+                :volume           (volume-name sb)
+                :block-size       bs
+                :spb              (quot bs (:sector-size dev))
+                :blocks           (u32 sb sb-blocks-count)
+                :inodes           (u32 sb sb-inodes-count)
+                :first-data-block fdb
+                :blocks-per-group bpg
+                :inodes-per-group (u32 sb sb-inodes-per-group)
+                :inode-size       (if (>= rev 1) (u16 sb sb-inode-size) 128)
+                :filetype?        (not= 0 (bit-and incompat incompat-filetype))
+                :large-file?      (not= 0 (bit-and ro ro-large-file))
+                :features         {:compat (if (>= rev 1) (u32 sb sb-feature-compat) 0)
+                                   :incompat incompat
+                                   :ro-compat ro}}]
+        (assoc fs :groups (read-groups fs (ceil-div (- (:blocks fs) fdb) bpg)))))))
+
+;; ── inodes ────────────────────────────────────────────────────────────────
+
+(defn read-inode [fs ino]
+  (when (or (< ino 1) (> ino (:inodes fs))) (fail! :read-inode ino :bad-inode))
+  (let [bs   (:block-size fs)
+        i    (dec ino)
+        g    (nth (:groups fs) (quot i (:inodes-per-group fs)))
+        byte (* (rem i (:inodes-per-group fs)) (:inode-size fs))
+        buf  (read-block fs (+ (:inode-table g) (quot byte bs)))
+        o    (rem byte bs)
+        mode (u16 buf (+ o i-mode))
+        t    (mode->type mode)
+        lo   (u32 buf (+ o i-size))
+        hi   (if (and (= t :file) (:large-file? fs)) (u32 buf (+ o i-size-hi)) 0)]
+    {:ino      ino
+     :mode     mode
+     :type     t
+     :perm     (bit-and mode 0xFFF)
+     :size     (+ (bit-shift-left hi 32) lo)
+     :uid      (u16 buf (+ o i-uid))
+     :gid      (u16 buf (+ o i-gid))
+     :links    (u16 buf (+ o i-links))
+     :mtime    (u32 buf (+ o i-mtime))
+     :sectors  (u32 buf (+ o i-blocks))
+     :file-acl (u32 buf (+ o i-file-acl))
+     :block    (vec (map (fn [k] (u32 buf (+ o i-block (* 4 k)))) (range 15)))
+     :i-block  (beer.bytes/slice buf (+ o i-block) 60)}))
+
+;; ── block map ─────────────────────────────────────────────────────────────
+
+(defn collect
+  "Physical block numbers for the first `need` data blocks below blk, an
+  indirect block of the given depth (0 = blk is itself a data block).
+  Each indirect block is read once. Holes come back as 0."
+  [fs blk depth need]
+  (if (= depth 0)
+    [blk]
+    (let [ppb  (quot (:block-size fs) 4)
+          span (loop [d 1 s 1] (if (= d depth) s (recur (inc d) (* s ppb))))
+          buf  (when (not= blk 0) (read-block fs blk))]
+      (loop [i 0 acc [] left need]
+        (if (or (= i ppb) (<= left 0))
+          acc
+          (let [sub (collect fs (if buf (u32 buf (* 4 i)) 0) (dec depth) (min left span))]
+            (recur (inc i) (into acc sub) (- left (count sub)))))))))
+
+(defn file-blocks
+  "Vector of physical block numbers holding the inode's data, in order."
+  [fs inode]
+  (let [bs (:block-size fs)
+        b  (:block inode)
+        tops (concat (map (fn [k] [(nth b k) 0]) (range 12))
+                     [[(nth b 12) 1] [(nth b 13) 2] [(nth b 14) 3]])]
+    (loop [tops tops acc [] left (ceil-div (:size inode) bs)]
+      (if (or (<= left 0) (empty? tops))
+        acc
+        (let [[blk depth] (first tops)
+              sub (collect fs blk depth left)]
+          (recur (rest tops) (into acc sub) (- left (count sub))))))))
+
+(defn read-inode-data
+  "The inode's contents as a ByteBuffer of exactly :size bytes. Runs of
+  contiguous blocks go to the device as one transfer."
+  [fs inode]
+  (let [bs     (:block-size fs)
+        blocks (file-blocks fs inode)
+        nb     (count blocks)
+        max-run (max 1 (quot max-run-bytes bs))
+        buf    (beer.bytes/alloc (max 1 (* nb bs)))]
+    (loop [i 0]
+      (when (< i nb)
+        (let [start (nth blocks i)
+              run   (loop [n 1]
+                      (if (and (< (+ i n) nb) (< n max-run) (not= start 0)
+                               (= (nth blocks (+ i n)) (+ start n)))
+                        (recur (inc n))
+                        n))]
+          (when (not= start 0) (read-blocks-into! fs start run buf (* i bs)))
+          (recur (+ i run)))))
+    (if (= (beer.bytes/capacity buf) (:size inode))
+      buf
+      (beer.bytes/slice buf 0 (:size inode)))))
+
+;; ── directories ───────────────────────────────────────────────────────────
+
+(defn ft->type [ft]
+  (cond (= ft 1) :file
+        (= ft 2) :dir
+        (= ft 7) :symlink
+        :else    :other))
+
+(defn dir-entries
+  "Entries of a directory inode: [{:name :ino :type}], in on-disk order.
+  :type is nil when the filesystem lacks the filetype feature."
+  [fs inode]
+  (let [buf  (read-inode-data fs inode)
+        size (:size inode)
+        ft?  (:filetype? fs)]
+    (loop [o 0 acc []]
+      (if (>= (+ o 8) size)
+        acc
+        (let [ino (u32 buf o)
+              rec (u16 buf (+ o 4))
+              nl  (if ft? (u8 buf (+ o 6)) (u16 buf (+ o 6)))]
+          (when (< rec 8) (fail! :readdir (:ino inode) :corrupt-directory))
+          (recur (+ o rec)
+                 (if (= ino 0)
+                   acc
+                   (conj acc {:name (beer.bytes/->string (beer.bytes/slice buf (+ o 8) nl))
+                              :ino  ino
+                              :type (when ft? (ft->type (u8 buf (+ o 7))))}))))))))
+
+(defn lookup [fs dir name]
+  (some (fn [e] (when (= (:name e) name) (:ino e))) (dir-entries fs dir)))
+
+;; ── symlinks and paths ────────────────────────────────────────────────────
+
+(defn link-target [fs inode]
+  (let [ea-sectors (if (= 0 (:file-acl inode)) 0 (quot (:block-size fs) 512))]
+    (if (= (:sectors inode) ea-sectors)          ; fast symlink: inside i_block
+      (beer.bytes/->string (beer.bytes/slice (:i-block inode) 0 (:size inode)))
+      (beer.bytes/->string (read-inode-data fs inode)))))
+
+(defn split-path [path]
+  (filter (fn [s] (not= s "")) (beer.string/split path "/")))
+
+(defn resolve-inode
+  "Inode at path (absolute, from the root). Symlinks along the way are
+  followed; the last component only when follow? is true."
+  [fs path follow?]
+  (let [root (read-inode fs root-ino)]
+    (loop [cur root comps (split-path path) hops 0]
+      (if (empty? comps)
+        cur
+        (let [nm (first comps)
+              more (rest comps)]
+          (when (not= (:type cur) :dir) (fail! :lookup path :not-a-directory))
+          (let [ino (lookup fs cur nm)]
+            (when (nil? ino) (fail! :lookup path :not-found))
+            (let [child (read-inode fs ino)]
+              (if (and (= (:type child) :symlink) (or follow? (not (empty? more))))
+                (let [target (link-target fs child)]
+                  (when (>= hops max-symlink-hops) (fail! :lookup path :too-many-links))
+                  (recur (if (beer.string/starts-with? target "/") root cur)
+                         (concat (split-path target) more)
+                         (inc hops)))
+                (recur child more hops)))))))))
+
+;; ── public ────────────────────────────────────────────────────────────────
+
+(defn stat  [fs path] (dissoc (resolve-inode fs path true) :i-block))
+(defn lstat [fs path] (dissoc (resolve-inode fs path false) :i-block))
+
+(defn readlink [fs path]
+  (let [inode (resolve-inode fs path false)]
+    (when (not= (:type inode) :symlink) (fail! :readlink path :not-a-symlink))
+    (link-target fs inode)))
+
+(defn ls
+  "Names in the directory at path, without . and .."
+  [fs path]
+  (let [inode (resolve-inode fs path true)]
+    (when (not= (:type inode) :dir) (fail! :ls path :not-a-directory))
+    (sort (filter (fn [n] (and (not= n ".") (not= n "..")))
+                  (map :name (dir-entries fs inode))))))
+
+(defn read-bytes
+  "Contents of the file at path as a ByteBuffer."
+  [fs path]
+  (let [inode (resolve-inode fs path true)]
+    (when (not= (:type inode) :file) (fail! :read path :not-a-file))
+    (read-inode-data fs inode)))
+
+(defn slurp
+  "Contents of the file at path as a string (must be valid UTF-8)."
+  [fs path]
+  (let [s (beer.bytes/->string (read-bytes fs path))]
+    (when (nil? s) (fail! :slurp path :not-utf8))
+    s))

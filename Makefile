@@ -188,15 +188,26 @@ run: _check_picolibc beeros.elf
 # run-gfx: opens a display window + REPL on stdio
 # Uses -display cocoa on macOS; change to -display gtk on Linux.
 DISPLAY_BACKEND ?= cocoa
-run-gfx: _check_picolibc kernel/gfx_beer_blob.h
+# run-gfx attaches build/disk.img (built first) unless DISK is given;
+# DISK= boots without a disk
+run-gfx: DISK ?= $(DISK_IMG)
+run-gfx: _check_picolibc kernel/gfx_beer_blob.h $(if $(filter undefined,$(origin DISK)),$(DISK_IMG))
 	$(MAKE) BOARD=$(BOARD) BEEROS_GFX=1
 	$(QEMU) -M virt -m 256M -bios none \
 	  -device ramfb -display $(DISPLAY_BACKEND) \
 	  -serial stdio -global virtio-mmio.force-legacy=false $(DISK_FLAGS) $(INPUT_FLAGS) \
 	  -kernel beeros.elf
 
-beeros.elf: $(BEER_ROOT)/include/beerlang.h $(OBJS) $(PLATFORM_DIR)/boot/$(BOARD).ld
+# Each variant links in its own build dir; beeros.elf is a copy of the one
+# just built, refreshed every time (a plain and a gfx build would otherwise
+# leave whichever is newer)
+$(BUILD_DIR)/beeros.elf: $(BEER_ROOT)/include/beerlang.h $(OBJS) $(PLATFORM_DIR)/boot/$(BOARD).ld
 	$(LD) $(CFLAGS) -o $@ $(filter-out %.h %.ld,$^) $(LDFLAGS)
+
+beeros.elf: $(BUILD_DIR)/beeros.elf FORCE
+	cp $< $@
+
+FORCE:
 
 beeros.bin: beeros.elf
 	$(OBJCOPY) -O binary $< $@

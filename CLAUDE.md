@@ -200,7 +200,8 @@ geometry; filesystems only ever see the map. Always built (no flag).
   the REPL; one driver owns a device at a time.
 
 Attach a disk: `make run BOARD=virt-riscv DISK=disk.img` (raw image), or
-`make run-disk` to build `build/disk.img` from `rootfs/` (+ beerlang's
+`make run-disk` to build `build/disk.img` from `rootfs/` (`make run-gfx`
+attaches it by default; `DISK=` for none) (+ beerlang's
 `string`/`json`/`test`/`digest`/`crypto`/`tar` libs in `/lib/beer`) and boot with it.
 
 ## Filesystem (`beer.ext2`)

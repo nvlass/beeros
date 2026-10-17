@@ -10,6 +10,7 @@
 #include "function.h"
 #include "memory.h"
 #include "scheduler.h"
+#include "symbol.h"
 #include "task.h"
 #include "vector.h"
 #include "vm.h"
@@ -92,5 +93,9 @@ void beer_load_blob(const unsigned char* data, unsigned int len,
     object_release(forms);
 
 restore:
-    if (saved) namespace_registry_set_current(global_namespace_registry, saved);
+    if (!saved) return;
+    namespace_registry_set_current(global_namespace_registry, saved);
+    /* A file's (ns ...) also set *ns* in beer.core; keep it in step, as in-ns would */
+    Namespace* core = namespace_registry_get_core(global_namespace_registry);
+    if (core) namespace_define(core, symbol_intern("*ns*"), symbol_intern(saved->name));
 }

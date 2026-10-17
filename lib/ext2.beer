@@ -116,7 +116,8 @@
       (when (not= 0 (bit-and incompat (bit-not incompat-supported)))
         (fail! :mount nm :unsupported-features))
       (when (< bs (:sector-size dev)) (fail! :mount nm :block-smaller-than-sector))
-      (let [fs {:dev              dev
+      (let [fs {:type             :ext2
+                :dev              dev
                 :name             nm
                 :volume           (volume-name sb)
                 :block-size       bs

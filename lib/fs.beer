@@ -1,0 +1,99 @@
+;; beer.fs — mount table and path-level file access (see docs/filesystem.md)
+;;
+;; Paths are absolute. The longest mount point that prefixes a path picks
+;; the filesystem; the rest of the path goes to that filesystem's ops.
+;; At boot the first ext2 block device is mounted at "/".
+
+(ns beer.fs)
+
+(def impls
+  {:ext2 {:ls         beer.ext2/ls
+          :slurp      beer.ext2/slurp
+          :read-bytes beer.ext2/read-bytes
+          :stat       beer.ext2/stat
+          :lstat      beer.ext2/lstat
+          :readlink   beer.ext2/readlink}})
+
+(def mount-table (atom {}))
+
+(defn normalize-mount-point [p]
+  (if (and (not= p "/") (beer.string/ends-with? p "/"))
+    (subs p 0 (dec (count p)))
+    p))
+
+(defn mount! [point fs]
+  (when (nil? (get impls (:type fs)))
+    (throw (ex-info (str "fs: no ops for filesystem type " (:type fs)) {:fs (:name fs)})))
+  (swap! mount-table assoc (normalize-mount-point point) fs)
+  point)
+
+(defn umount! [point]
+  (swap! mount-table dissoc (normalize-mount-point point))
+  nil)
+
+(defn mounts []
+  (let [m @mount-table]
+    (into {} (map (fn [p] (let [fs (get m p)] [p (str (:name fs) " (" (name (:type fs)) ")")]))
+                  (keys m)))))
+
+(defn under? [point path]
+  (or (= point "/")
+      (= path point)
+      (beer.string/starts-with? path (str point "/"))))
+
+(defn locate
+  "[fs rest-of-path] for an absolute path."
+  [path]
+  (when (not (beer.string/starts-with? path "/"))
+    (throw (ex-info (str "fs: path must be absolute: " path) {:path path :reason :relative-path})))
+  (let [point (reduce (fn [best p]
+                        (if (and (under? p path) (or (nil? best) (> (count p) (count best)))) p best))
+                      nil (keys @mount-table))]
+    (when (nil? point)
+      (throw (ex-info (str "fs: nothing mounted for " path) {:path path :reason :not-mounted})))
+    [(get @mount-table point)
+     (if (= point "/") path (let [r (subs path (count point))] (if (= r "") "/" r)))]))
+
+(defn op [k path]
+  (let [[fs rel] (locate path)]
+    ((get (get impls (:type fs)) k) fs rel)))
+
+(defn ls         [path] (op :ls path))
+(defn slurp      [path] (op :slurp path))
+(defn read-bytes [path] (op :read-bytes path))
+(defn stat       [path] (op :stat path))
+(defn lstat      [path] (op :lstat path))
+(defn readlink   [path] (op :readlink path))
+
+(defn exists? [path]
+  (try (stat path) true (catch e false)))
+
+(defn load-file
+  "Read and evaluate every form in the file at path, in order; returns the
+  last value. The current namespace is restored afterwards."
+  [path]
+  (let [forms (read-string (str "[" (slurp path) "\n]"))
+        saved *ns*]
+    (try
+      (loop [fs forms i 0 result nil]
+        (if (empty? fs)
+          result
+          (let [r (try (eval (first fs))
+                       (catch e
+                         (throw (ex-info (str path ", form " i ": " (:message e))
+                                         {:path path :form i :cause e}))))]
+            (recur (rest fs) (inc i) r))))
+      (finally (in-ns saved)))))
+
+;; ── boot: mount the first ext2 device at / ───────────────────────────────
+
+(defn auto-mount! []
+  (let [found (some (fn [dname]
+                      (try [dname (beer.ext2/mount (beer.blk/device dname))]
+                           (catch e nil)))
+                    (sort (beer.blk/devices)))]
+    (when found
+      (mount! "/" (second found))
+      (println (str "[beeros] mounted " (first found) " (ext2) at /")))))
+
+(auto-mount!)

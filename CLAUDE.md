@@ -25,7 +25,9 @@ Everything else (VM, compiler, GC, types, channels, actors, stdlib) compiles unc
 `NOTE: ... not found`). beeros embeds `beerlang/lib/core.beer` via `xxd` and
 loads it into `beer.core` right after `namespace_init()` — it defines `defn`,
 `ns`, `let` (destructuring), `when`, `loop`, `->` etc., which `lib/mem.beer` and
-`lib/gfx.beer` need. All three go through `beer_load_blob()` (`kernel/blob_loader.c`).
+`lib/gfx.beer` need. All of them go through `beer_load_blob()` (`kernel/blob_loader.c`),
+which restores both the registry's current ns and `beer.core/*ns*` afterwards
+(they must agree, or `*ns*` reads stale inside library code).
 Every function compiled at boot or at the REPL gets `function_set_ns_name()` so
 its free symbols resolve in the defining namespace (beerlang requires this since
 `232fd28`). The reader has no `^` metadata support and there is no `defn-` or
@@ -59,6 +61,7 @@ beeros/
 │   ├── blk.beer       ← beer.blk: block-device maps, registry, error policy
 │   ├── virtio_blk.beer ← beer.virtio-blk: virtio-blk driver in beerlang (boot default)
 │   ├── ext2.beer      ← beer.ext2: read-only ext2 over a block-device map
+│   ├── fs.beer        ← beer.fs: mount table, path ops, load-file; mounts / at boot
 │   └── gfx.beer       ← beerlang drawing library
 └── Makefile
 ```
@@ -189,7 +192,9 @@ Attach a disk: `make run BOARD=virt-riscv DISK=disk.img` (raw image).
 ext2, chosen over FAT32/littlefs/etc. — comparison and staged plan in
 `docs/filesystem.md`. `lib/ext2.beer` is read-only so far:
 `(beer.ext2/mount dev)`, `ls`, `slurp`, `read-bytes`, `stat`/`lstat`,
-`readlink`. Refuses incompat features other than `filetype` (so ext3/4
+`readlink`. `lib/fs.beer` (`beer.fs`) mounts the first ext2 device at `/`
+at boot and offers `ls`/`slurp`/`stat`/`mount!`/`load-file` on absolute
+paths. Refuses incompat features other than `filetype` (so ext3/4
 images are rejected, not misread). Build images with e2fsprogs
 (`brew install e2fsprogs`, keg-only in `/opt/homebrew/opt/e2fsprogs/sbin`):
 `mke2fs -t ext2 -d rootdir/ disk.img 8M`. QEMU needs `-m 256M` (from

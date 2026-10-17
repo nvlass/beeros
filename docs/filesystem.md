@@ -1,7 +1,7 @@
 # Filesystem choice
 
 Status: **decided: ext2**, implemented in stages. Stage 1 (read-only,
-`lib/ext2.beer`) is done. This
+`lib/ext2.beer`) and stage 2 (`lib/fs.beer`, mount table + `load-file`) are done. This
 sits on the block-device map from `docs/block-device.md`; a filesystem only
 ever calls `:read!` / `:write!` / `:flush!`.
 
@@ -96,6 +96,29 @@ nested paths, `.`/`..`, fast/slow/relative/absolute symlinks,
 double-indirect files, sparse files, empty files, multi-block directories;
 ext4 and blank disks are refused. A 400 KB file reads in ~50 ms (4 KiB
 blocks) / ~135 ms (1 KiB blocks) under QEMU with the beerlang driver.
+
+## Stage 2 API (`beer.fs`)
+
+At boot the first block device holding ext2 is mounted at `/`.
+
+```clojure
+(beer.fs/mounts)                       ; {"/" "virtio0 (ext2)"}
+(beer.fs/mount! "/mnt" (beer.ext2/mount (beer.blk/device "virtio1")))
+(beer.fs/ls "/lib")  (beer.fs/slurp p)  (beer.fs/read-bytes p)
+(beer.fs/stat p)  (beer.fs/exists? p)  (beer.fs/umount! "/mnt")
+(beer.fs/load-file "/lib/demo.beer")   ; evals each form, returns the last
+```
+
+Paths are absolute; the longest matching mount point wins. A filesystem
+type plugs in through `beer.fs/impls` (`{:ext2 {:ls ... :slurp ...}}`).
+
+`load-file` is plain beerlang: `(read-string (str "[" src "\n]"))` reads
+every form at once (as beerlang's own `load` does), then `eval`s them in
+order and restores `*ns*`. Errors are rethrown with the path and form
+index. beerlang's `load` and `require` can't be reused as-is: `load`
+`fopen`s a host path and its buffer loader is `static`. Making `require`
+find namespaces on disk needs a source-lookup hook in beerlang (it already
+falls back to an in-memory tar index); until then use `load-file`.
 
 ## Building test images
 

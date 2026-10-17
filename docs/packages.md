@@ -1,6 +1,6 @@
 # Packages
 
-Status: design. Builds on beerlang's existing project tooling (`beer.edn`,
+Status: design; the emergency key is implemented. Builds on beerlang's existing project tooling (`beer.edn`,
 `beer build`, `beer ubertar`, tar index); the beerlang side is requested in
 beerlang's `TODO.md` ("beeros requests", item 5).
 
@@ -93,24 +93,31 @@ point inside the package, and add aliases so qualified symbols
 namespaces. Known gaps: syntax-quote expansions, symbols kept as data,
 `resolve`/`ns-publics` by name. Not worth it until a conflict forces it.
 
-## Emergency drop to REPL
+## Emergency drop to REPL (done)
 
 A running program owns the console; the user needs a way back that the
 program can't block.
 
-- **Keys**: on serial, `Ctrl-\` (0x1C) or a serial BREAK; on keyboards, a
-  Ctrl-Alt-Esc chord. Seen by the UART receive interrupt (bytes go into
-  a ring buffer, so the check works even while a program hogs the CPU)
-  and by the keyboard task.
-- **Stop**: beerlang's requested `vm_request_interrupt()` (TODO item 4)
-  raises an interrupt in the task the REPL is waiting on. Until it
-  exists, beeros can only flag the request; a program that never
-  yields can't be stopped.
-- **Recover**: point `beer.tty/current` back at the console, re-enable
-  `beer.lineedit`, reset the terminal (`ESC c` / clear), print
-  `[beeros] interrupted`, return to the prompt. Spawned background tasks
-  of the program keep running; `(beer.pkg/stop "snake")` (later) would
-  track and stop them.
+- **Keys**: `Ctrl-\` or a serial BREAK always; `Ctrl-C` too while a form
+  runs (at the prompt it cancels the line), unless the program turned it
+  off with `(beer.tty/ctrl-c-interrupts! false)`, as an editor that binds
+  `C-c` would. On keyboards the same, plus Ctrl-Alt-Esc.
+- **Seen by**: the UART receive interrupt (`kernel/console.c`; bytes go
+  into a ring the serial tty reads, so the keys work while a program hogs
+  the CPU or never reads input) and, for keyboards, a `beer.input/intercept`
+  hook (`beer.tty/interrupt-key?`) in the virtio-input task. Either drops
+  the bytes typed ahead.
+- **Stop**: beerlang's `vm_request_interrupt()` / `(request-interrupt!)`:
+  the scheduler unwinds the foreground task (the REPL's form, and loads it
+  runs) between quanta, running `finally` blocks but skipping `catch`.
+  Background tasks keep running.
+- **Recover**: the REPL prints `[beeros] interrupted`, drops the rest of
+  the input and calls `(beer.tty/recover!)`: console back to the serial
+  tty, attributes reset, cursor shown, Ctrl-C interrupting again.
+  `(beer.pkg/stop "snake")` (later) would track and stop a program's
+  spawned tasks.
+- Not covered: a task stuck inside a C native that never returns, and a
+  background task that hogs the CPU (nothing is foreground to stop).
 
 ## Implementation order
 
@@ -119,10 +126,11 @@ program can't block.
 2. `beer.fs` require wrapper consults tar indexes on load-path; `/pkg`
    added to load-path and the rootfs.
 3. `beer.pkg`: `run`, `exec`, `resource`, `rescan!`, `installed`.
-4. UART RX interrupt + ring buffer; break-key detection.
-5. Wire the interrupt once beerlang has it; move tar reading and require
-   onto beerlang's file system hook when that lands, deleting the beeros
-   wrappers.
+4. ~~UART RX interrupt + ring buffer; break-key detection; wire the
+   interrupt~~ (done).
+5. ~~Move require onto beerlang's file system hook, deleting the beeros
+   wrappers~~ (done); tars from memory need beerlang's
+   `tar_index_add_buffer` / `beer run app.tar` (its TODO, item 5).
 
 Until `beer build` writes `beer.edn` into the tar, a package can be made
 with plain `tar -cf snake.tar beer.edn -C src .`.

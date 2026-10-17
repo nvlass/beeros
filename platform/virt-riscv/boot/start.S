@@ -33,20 +33,22 @@ _start:
 .Lbss_init:
         la      t0, _bss_start
         la      t1, _bss_end
-.Lbss:  bgeu    t0, t1, .Lcall
+.Lbss:  bgeu    t0, t1, .Ltrap
         sd      zero, 0(t0)
         addi    t0, t0, 8
         j       .Lbss
 
         /* Wire M-mode trap vector (direct mode: all traps → trap_vector) */
-        la      t0, trap_vector
+.Ltrap: la      t0, trap_vector
         csrw    mtvec, t0
 
-        /* Enable M-mode external + timer interrupts in mie;
-         * mstatus.MIE is set last so interrupts only fire after mtvec is ready */
-        li      t0, (1 << 11) | (1 << 7)   /* MEIE | MTIE */
+        /* Enable M-mode external interrupts (PLIC) in mie. Not the timer:
+         * nothing programs mtimecmp, whose reset value 0 would keep MTIP
+         * set. mstatus.MIE is set last so interrupts only fire after mtvec
+         * is ready */
+        li      t0, (1 << 11)              /* MEIE */
         csrs    mie, t0
-        li      t0, (1 << 3)                /* mstatus.MIE */
+        li      t0, (1 << 3)               /* mstatus.MIE */
         csrs    mstatus, t0
 
 .Lcall: call    beeros_main

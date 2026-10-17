@@ -2,8 +2,9 @@
 ;;
 ;; Paths are absolute. The longest mount point that prefixes a path picks
 ;; the filesystem; the rest of the path goes to that filesystem's ops.
-;; At boot the first ext2 block device is mounted at "/", `require` learns
-;; to load namespaces from load-path (/lib), and /etc/init.beer runs.
+;; At boot the first ext2 block device is mounted at "/" and beer.core's
+;; file functions (slurp, load-file, require from /lib) are pointed at
+;; beer.fs; /etc/init.beer runs once all libraries are loaded.
 
 (ns beer.fs)
 
@@ -69,85 +70,19 @@
 (defn exists? [path]
   (try (stat path) true (catch e false)))
 
-(defn load-file
-  "Read and evaluate every form in the file at path, in order; returns the
-  last value. The current namespace is restored afterwards."
-  [path]
-  (let [forms (read-string (str "[" (slurp path) "\n]"))
-        saved *ns*]
-    (try
-      (loop [fs forms i 0 result nil]
-        (if (empty? fs)
-          result
-          (let [r (try (eval (first fs))
-                       (catch e
-                         (throw (ex-info (str path ", form " i ": " (:message e))
-                                         {:path path :form i :cause e}))))]
-            (recur (rest fs) (inc i) r))))
-      (finally (in-ns saved)))))
+;; ── beerlang's file system hook ──────────────────────────────────────────
+;; slurp, spit, load-file and require's *load-path* search in beer.core go
+;; through beer.core/*fs*, so they work on these paths unchanged.
 
-;; ── require from the filesystem ───────────────────────────────────────────
-;; beerlang's require only fopen()s host paths (and an in-memory tar index).
-;; It skips loading a namespace already in beer.core/*loaded-libs* but
-;; still applies :as / :refer, so this wrapper loads foo.bar from
-;; <dir>/foo/bar.beer, marks it loaded and hands over. Remove it once
-;; beerlang has a source-lookup hook (beerlang TODO.md, beeros request).
+(defn hook-read [path]
+  (try (slurp path) (catch e nil)))
 
-(def load-path (atom ["/lib"]))
+(defn hook-write! [path s append?]
+  (throw (ex-info (str "fs: " path ": file systems are read-only so far")
+                  {:path path :reason :read-only})))
 
-(def native-require
-  (or (try beer.fs/native-require (catch e nil))   ; reloading fs.beer keeps the original
-      beer.core/require))
-
-(defn ns->rel-path [ns-sym]
-  (str (beer.string/replace (name ns-sym) "." "/") ".beer"))
-
-(defn find-source
-  "Path of the file defining ns-sym on load-path, or nil."
-  [ns-sym]
-  (let [rel (ns->rel-path ns-sym)]
-    (some (fn [dir]
-            (let [p (str dir "/" rel)]
-              (when (exists? p) p)))
-          (if (empty? @mount-table) [] @load-path))))
-
-(defn loaded-libs [] (try beer.core/*loaded-libs* (catch e nil)))
-
-(defn loaded? [ns-sym]
-  (let [m (loaded-libs)] (and m (get m (keyword (name ns-sym))))))
-
-(def loading (atom #{}))
-
-(defn require-one [ns-sym opts]
-  (when (not (loaded? ns-sym))
-    (let [path (find-source ns-sym)]
-      (when path
-        (when (contains? @loading ns-sym)
-          (throw (ex-info (str "require: circular dependency on " ns-sym)
-                          {:ns ns-sym :reason :circular})))
-        (swap! loading conj ns-sym)
-        (try
-          (load-file path)
-          (finally (swap! loading disj ns-sym)))
-        (def beer.core/*loaded-libs*
-          (assoc (or (loaded-libs) (hash-map)) (keyword (name ns-sym)) true)))))
-  (apply native-require ns-sym opts))
-
-(defn require
-  "Like beer.core/require, but finds namespaces on load-path first. Also
-  takes Clojure's vector form: (require '[foo.bar :as fb] 'baz)."
-  [x & more]
-  (if (vector? x)
-    (do (require-one (first x) (rest x))
-        (doseq [y more] (require y))
-        nil)
-    (if (and (not (empty? more)) (keyword? (first more)))
-      (require-one x more)                       ; (require 'ns :as 'a ...)
-      (do (require-one x [])
-          (doseq [y more] (require y))
-          nil))))
-
-(def beer.core/require require)
+(def beer.core/*fs* {:read hook-read :write! hook-write!})
+(def beer.core/*load-path* ["/lib/"])
 
 ;; ── boot: mount the first ext2 device at /, run /etc/init.beer ───────────
 
@@ -164,8 +99,10 @@
 
 (defn run-init! []
   (when (and (not (empty? @mount-table)) (exists? init-file))
-    (try
-      (load-file init-file)
-      (catch e (println (str "[beeros] " init-file ": " (:message e)))))))
+    (let [saved *ns*]                      ; load-file leaves its (ns ...) current
+      (try
+        (load-file init-file)
+        (catch e (println (str "[beeros] " (:message e))))
+        (finally (in-ns saved))))))
 
 (auto-mount!)

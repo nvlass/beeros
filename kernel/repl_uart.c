@@ -4,10 +4,9 @@
  * Entry point: beeros_main(), called from platform/<board>/boot/start.S
  * after the stack and BSS are set up.
  *
- * Phase 1 note: core.beer macros (defn, let, cond, ->, ...) are NOT
- * available until LittleFS storage is wired (Phase 2). Special forms
- * (def, if, fn, do, loop, recur, try, spawn, ...) and native functions
- * work immediately.
+ * Boot: core.beer and the beeros libraries come from embedded blobs
+ * (beer_load_blob). Interrupts: Ctrl-\, a serial BREAK or (while a form
+ * runs) Ctrl-C stop the form; see kernel/console.c.
  */
 
 #include <stddef.h>
@@ -35,6 +34,7 @@
 #include "blk_natives.h"
 #include "blob_loader.h"
 #include "beer_libs.h"
+#include "console.h"
 #include "core_beer_blob.h"
 
 #ifdef BEEROS_GFX
@@ -100,13 +100,19 @@ static bool is_form_complete(const char* src) {
 
 /* ----------------------------------------------------------------
  * uart_readline — read one line from UART with echo and backspace.
- * Runs scheduler ticks while waiting. Returns number of chars read.
+ * Runs scheduler ticks while waiting. Returns number of chars read, or
+ * -1 if an interrupt key dropped the line.
  * ---------------------------------------------------------------- */
 static int uart_readline(char* buf, int max) {
     int i = 0;
     while (i < max - 1) {
         char c;
-        if (uart_getc_nonblock(&c)) {
+        if (vm_interrupt_requested) {
+            vm_interrupt_requested = 0;
+            uart_puts("\r\n");
+            return -1;
+        }
+        if (console_getc_nonblock(&c)) {
             if (c == '\r') {
                 /* CR: echo CRLF and end line */
                 uart_puts("\r\n");
@@ -200,10 +206,14 @@ static int lineedit_read(const char* prompt, char* buf, int max) {
     Value tv = task_new_from_code(lineedit_code->bytecode, (int)lineedit_code->code_size,
                                   lineedit_consts, lineedit_nconsts, global_scheduler);
     Task* t = task_get(tv);
+    vm_interrupt_requested = 0;
     scheduler_run_task_to_completion(global_scheduler, t);
 
     int n = -1;
-    if (t->vm->error) {
+    if (t->vm->error && vm_is_interrupt(t->vm->thrown_exception)) {
+        uart_puts("\r\n");          /* an interrupt key drops the line */
+        n = 0;
+    } else if (t->vm->error) {
         lineedit_disable(t->vm->error_msg);
     } else if (!is_string(t->result)) {
         lineedit_disable("read-form did not return a string");
@@ -219,6 +229,22 @@ static int lineedit_read(const char* prompt, char* buf, int max) {
     }
     object_release(tv);
     return n;
+}
+
+/* ----------------------------------------------------------------
+ * recover — after an interrupted form: console back to the serial tty,
+ * terminal attributes reset (lib/tty.beer, beer.tty/recover!)
+ * ---------------------------------------------------------------- */
+static void recover(void) {
+    uart_puts("\r\n[beeros] interrupted\r\n");
+    VM* vm = vm_new(16);
+    core_load_source(vm, "(beer.tty/recover!)", "<recover>");
+    if (vm->error) {
+        uart_puts("[beeros] recover failed: ");
+        uart_puts(vm->error_msg);
+        uart_puts("\r\n");
+    }
+    vm_free(vm);
 }
 
 /* ----------------------------------------------------------------
@@ -249,12 +275,16 @@ static void run_repl(void) {
         }
 
         /* The editor returns whole forms, so only use it at the start of one */
+        /* Ctrl-C is an editing key while reading, an interrupt otherwise */
+        console_set_reading(true);
         int n = accum_len == 0 ? lineedit_read(prompt, input, INPUT_SIZE) : -1;
         bool whole_form = n > 0;   /* the editor already checked it (and knows \( etc.) */
         if (n < 0) {
             uart_puts(prompt);
             n = uart_readline(input, INPUT_SIZE);
+            if (n < 0) { accum_len = 0; accum[0] = '\0'; n = 0; }
         }
+        console_set_reading(false);
         if (n == 0) continue;
 
         /* Exit check */
@@ -341,9 +371,17 @@ static void run_repl(void) {
                 code->bytecode, (int)code->code_size,
                 constants, n_constants, global_scheduler);
             Task* repl_task = task_get(task_val);
+            vm_interrupt_requested = 0;   /* keys pressed before the form don't stop it */
             scheduler_run_task_to_completion(global_scheduler, repl_task);
 
-            if (repl_task->vm->error) {
+            bool interrupted = repl_task->vm->error &&
+                               vm_is_interrupt(repl_task->vm->thrown_exception);
+            if (interrupted) {
+                object_release(task_val);
+                retain_unit(code, constants);
+                recover();
+                break;                    /* the rest of the input goes too */
+            } else if (repl_task->vm->error) {
                 uart_puts("Error: ");
                 uart_puts(repl_task->vm->error_msg);
                 uart_puts("\r\n");
@@ -378,13 +416,15 @@ void beeros_main(void) {
 
     memory_init();
     symbol_init();
-    namespace_init();   /* its own core.beer load fails (no FS) and prints a NOTE */
+    namespace_init_bare();   /* core.beer comes from the blob below, not a file */
     /* defn/ns/let/when/loop... are core.beer macros; mem.beer and gfx.beer need them */
     beer_load_blob(core_beer, core_beer_len, "lib/core.beer", "beer.core");
     uart_puts("[beeros] core macros loaded (embedded lib/core.beer)\r\n");
 
     mem_register_natives();
     mem_load_library();
+    console_register_natives();
+    console_init();          /* UART receive by interrupt: Ctrl-\ works from here on */
 
     blk_register_natives();
     blk_load_library();

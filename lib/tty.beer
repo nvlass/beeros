@@ -16,10 +16,11 @@
 (def csi (str esc "["))
 
 ;; ── UART bytes ────────────────────────────────────────────────────────────
-
-(defn uart-byte []
-  (when (not= 0 (bit-and (beer.mem/read8 beer.mem/uart0-lsr) 1))
-    (beer.mem/read8 beer.mem/uart0-rbr)))
+;; (uart-byte) is a native (kernel/console.c): the next byte from the
+;; receive ring the UART interrupt fills, or nil. The interrupt keys never
+;; get here: Ctrl-\ and BREAK always stop the running form, Ctrl-C does
+;; while (ctrl-c-interrupts?) — turn it off with (ctrl-c-interrupts! false)
+;; in a program that wants Ctrl-C as a key.
 
 (def escape-timeout-ns 50000000)   ; lone ESC vs. the start of a sequence
 
@@ -129,6 +130,19 @@
         {:char c}
         {:key (:key ev) :mods mods}))))
 
+;; The same interrupt keys on keyboards: Ctrl-\ and Ctrl-Alt-Esc always,
+;; Ctrl-C under the same rule as on serial. beer.input drops the event.
+(defn interrupt-key? [ev]
+  (let [k (:key ev) m (or (:mods ev) no-mods)]
+    (when (and (= (:type ev) :key) (:down? ev)
+               (or (and (= k :backslash) (= m #{:ctrl}))
+                   (and (= k :escape) (contains? m :ctrl) (contains? m :alt))
+                   (and (= k :c) (= m #{:ctrl}) (ctrl-c-interrupts?))))
+      (request-interrupt!)
+      true)))
+
+(reset! beer.input/intercept interrupt-key?)
+
 ;; Also take keystrokes from beer.input keyboards (e.g. the QEMU window).
 ;; While a tty waits for a key it consumes all beer.input events.
 (def use-keyboard? (atom true))
@@ -156,4 +170,13 @@
 (def current (atom serial))
 
 (defn read-key [] ((:read-key @current)))
+
+(defn recover!
+  "After an interrupt: serial console, attributes reset, cursor shown,
+  Ctrl-C interrupting again. Called by the REPL."
+  []
+  (reset! current serial)
+  (ctrl-c-interrupts! true)
+  (print (str csi "0m" csi "?25h"))
+  nil)
 (defn write! [& xs] ((:write! @current) (apply str xs)))

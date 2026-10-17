@@ -1,7 +1,7 @@
 # Filesystem choice
 
 Status: **decided: ext2**, implemented in stages. Stage 1 (read-only,
-`lib/ext2.beer`) and stage 2 (`lib/fs.beer`, mount table + `load-file`) are done. This
+`lib/ext2.beer`) and stage 2 (`lib/fs.beer`, mount table + beerlang's file hook) are done. This
 sits on the block-device map from `docs/block-device.md`; a filesystem only
 ever calls `:read!` / `:write!` / `:flush!`.
 
@@ -106,23 +106,24 @@ At boot the first block device holding ext2 is mounted at `/`.
 (beer.fs/mount! "/mnt" (beer.ext2/mount (beer.blk/device "virtio1")))
 (beer.fs/ls "/lib")  (beer.fs/slurp p)  (beer.fs/read-bytes p)
 (beer.fs/stat p)  (beer.fs/exists? p)  (beer.fs/umount! "/mnt")
-(beer.fs/load-file "/lib/demo.beer")   ; evals each form, returns the last
+(load-file "/lib/demo.beer")           ; beerlang's own, through *fs*
 ```
 
 Paths are absolute; the longest matching mount point wins. A filesystem
 type plugs in through `beer.fs/impls` (`{:ext2 {:ls ... :slurp ...}}`).
 
-### `require` from `/lib`
+### `require`, `load-file`, `slurp` from the filesystem
 
-`beer.fs` wraps `beer.core/require`: `foo.bar` loads from
-`/lib/foo/bar.beer` (`beer.fs/load-path`, an atom), is marked in
-`beer.core/*loaded-libs*`, and then beerlang's own `require` applies
-`:as` / `:refer` (it skips loading what is already marked). The wrapper
-also accepts Clojure's vector form `(require '[foo.bar :as fb])`, which the
-native doesn't. `ns` forms go through it too. Namespaces from the embedded
-libraries (`beer.input`, `beer.fs`, ...) are marked loaded by the boot
-loader, so requiring them is a no-op plus `:as` / `:refer`. Delete the wrapper once
-beerlang has a source-lookup hook (requested in beerlang's TODO.md).
+beerlang reads files through a hook, `beer.core/*fs*` (nil on a host).
+`beer.fs` installs `{:read hook-read :write! hook-write!}` and sets
+`beer.core/*load-path*` to `["/lib/"]`, so beerlang's own `require`
+(`foo.bar` from `/lib/foo/bar.beer`, vector or flat specs, `ns`),
+`load-file`, `slurp` and `spit` work on these paths unchanged. `:read`
+returns nil for a missing file; `:write!` throws until ext2 writes exist.
+Namespaces from the embedded libraries (`beer.input`, `beer.fs`, ...)
+have no file under `/lib`, so the boot loader marks them in
+`beer.core/*loaded-libs*`; requiring them is a no-op plus `:as` /
+`:refer`.
 
 ### Root filesystem
 
@@ -134,13 +135,8 @@ reading `/dev/urandom`, still fail); `make run-disk` boots with it. Layout: `/et
 libraries load, `/etc/init.beer` runs (`beer.fs/run-init!`); errors in it
 are printed, not fatal.
 
-`load-file` is plain beerlang: `(read-string (str "[" src "\n]"))` reads
-every form at once (as beerlang's own `load` does), then `eval`s them in
-order and restores `*ns*`. Errors are rethrown with the path and form
-index. beerlang's `load` and `require` can't be reused as-is: `load`
-`fopen`s a host path and its buffer loader is `static`. Making `require`
-find namespaces on disk needs a source-lookup hook in beerlang (it already
-falls back to an in-memory tar index); until then beeros wraps it (above).
+beerlang's `load-file` leaves a file's `(ns ...)` current afterwards
+(Clojure restores it); `run-init!` restores it itself.
 
 ## Building test images
 

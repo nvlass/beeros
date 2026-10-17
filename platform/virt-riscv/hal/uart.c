@@ -6,6 +6,8 @@
  */
 
 #include "uart.h"
+#include "plic.h"
+#include "console.h"
 
 #define UART0_BASE  0x10000000UL
 #define UART0_CLOCK 3686400U
@@ -20,6 +22,7 @@
 #define DLM  IER                                        /* divisor MSB (DLAB=1) */
 
 #define LSR_DR   0x01  /* data ready */
+#define LSR_BI   0x10  /* break: the byte read with it is a 0 */
 #define LSR_THRE 0x20  /* TX holding register empty */
 
 void uart_init(uint32_t baud) {
@@ -50,4 +53,19 @@ char uart_getc(void) {
 int uart_getc_nonblock(char *c) {
     if (LSR & LSR_DR) { *c = (char)RBR; return 1; }
     return 0;
+}
+
+int uart_rx_irq_enable(void) {
+    while (LSR & LSR_DR) (void)RBR;   /* drop anything left from polling */
+    IER = 0x05;                       /* received data + line status (BREAK) */
+    plic_enable(UART_IRQ, 1);
+    return 1;
+}
+
+void uart_rx_isr(void) {
+    uint8_t lsr;
+    while ((lsr = LSR) & LSR_DR) {
+        uint8_t b = RBR;
+        console_rx(b, (lsr & LSR_BI) != 0);
+    }
 }

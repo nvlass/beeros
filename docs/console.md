@@ -1,7 +1,8 @@
 # Console: ttys, line editor, terminal emulator
 
-Status: tty layer and line editor implemented (`lib/tty.beer`,
-`lib/lineedit.beer`), the REPL reads through them. Terminal emulator,
+Status: tty layer, line editor and interrupt keys implemented
+(`lib/tty.beer`, `lib/lineedit.beer`, `kernel/console.c`), the REPL reads
+through them. Terminal emulator,
 fonts on disk and config: planned (below).
 
 ```
@@ -34,6 +35,23 @@ UTF-8, CR/LF/CRLF as one Enter. With `use-keyboard?` on (default) it also
 takes keystrokes from `beer.input` keyboards, so typing in the QEMU window
 reaches the REPL.
 
+### Interrupt keys
+
+UART input arrives by interrupt into a 256-byte ring (`kernel/console.c`;
+`beer.tty/uart-byte` reads it). The receive handler watches for the
+interrupt keys, so they work while a form hogs the CPU:
+
+| Key | |
+|---|---|
+| `Ctrl-\`, serial BREAK, Ctrl-Alt-Esc (keyboard) | always interrupt the running form |
+| `Ctrl-C` | interrupts while a form runs and `(beer.tty/ctrl-c-interrupts?)`; an editing key at the prompt |
+
+An interrupt drops the bytes typed ahead; beerlang unwinds the REPL's form
+(`finally` runs, `catch` doesn't) and the REPL calls `beer.tty/recover!`.
+At the prompt `Ctrl-\` drops the line being edited. Programs that use
+`C-c` as a key call `(beer.tty/ctrl-c-interrupts! false)`. Details in
+`docs/packages.md` ("Emergency drop to REPL").
+
 ## Line editor (`beer.lineedit`)
 
 Emacs-style editing on one line at a time, multi-line forms by
@@ -64,7 +82,10 @@ CR, `CSI K` (erase to end of line), `CSI n D` (cursor left), `CSI 7m` /
 `CSI 0m` (inverse on/off), `CSI H` + `CSI 2J` (clear).
 
 Not yet: horizontal scrolling for lines wider than the terminal, C-r
-search, persistent history (needs ext2 writes: `/var/history`).
+search, persistent history (needs ext2 writes: `/var/history`). Slow on
+long lines: every key redraws the whole line (fine when typing, but a
+pasted 100-character line takes about a second); redrawing only from the
+cursor would fix it.
 
 ## Next: terminal emulator (`beer.term`, planned)
 

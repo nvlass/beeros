@@ -31,18 +31,24 @@
   []
   (into #{} (filter (fn [m] m) (map (fn [k] (get modifier-keys k)) @held))))
 
+;; (fn [ev]) that sees every event first and returns true to swallow it;
+;; beer.tty installs the interrupt keys here
+(def intercept (atom nil))
+
 (defn emit!
   "Queue ev. Key events get :mods, the modifiers held when the key moved,
   so consumers that read the queue later still see the right shift state."
   [ev]
   (let [t  (:type ev)
-        ev (if (= t :key) (assoc ev :mods (mods)) ev)]
+        ev (if (= t :key) (assoc ev :mods (mods)) ev)
+        f  @intercept]
     (when (or (= t :key) (= t :button))
       (let [k (if (= t :key) (:key ev) (:button ev))]
         (swap! held (fn [h] (if (:down? ev) (conj h k) (disj h k))))))
-    (swap! queue (fn [q]
-                   (let [q (conj q ev)]
-                     (if (> (count q) queue-max) (subvec q 1) q)))))
+    (when (not (and f (f ev)))
+      (swap! queue (fn [q]
+                     (let [q (conj q ev)]
+                       (if (> (count q) queue-max) (subvec q 1) q))))))
   nil)
 
 (defn poll-event

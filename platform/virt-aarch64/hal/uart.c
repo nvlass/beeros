@@ -55,3 +55,7 @@ int uart_getc_nonblock(char *c) {
     if (!(FR & FR_RXFE)) { *c = (char)(DR & 0xFF); return 1; }
     return 0;
 }
+
+/* No receive interrupt yet: the console keeps polling */
+int uart_rx_irq_enable(void) { return 0; }
+void uart_rx_isr(void) {}

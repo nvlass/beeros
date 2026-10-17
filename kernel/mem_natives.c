@@ -48,9 +48,25 @@
 static Value          irq_handlers[MAX_IRQS];
 static volatile uint64_t irq_pending;   /* bit n set by trap handler */
 
+/* Saved by trap.S: x1-x31, then mepc and mcause */
+extern uint64_t g_trap_frame[33];
+
+static void put_hex(uint64_t v) {
+    for (int i = 60; i >= 0; i -= 4) uart_putc("0123456789abcdef"[(v >> i) & 0xF]);
+}
+
 /* Called from trap.S trap_vector after registers are saved */
 void mem_trap_handler(void) {
+    uint64_t mcause = g_trap_frame[32];
+    if (!(mcause >> 63)) {
+        /* An exception: returning would re-run the faulting instruction */
+        uart_puts("\r\n[beeros] fatal trap: mcause=0x"); put_hex(mcause);
+        uart_puts(" mepc=0x"); put_hex(g_trap_frame[31]);
+        uart_puts("\r\n");
+        for (;;) __asm__ volatile("wfi");
+    }
     uint32_t irq = plic_claim();
+    if (irq == UART_IRQ) uart_rx_isr();   /* console input: kernel/console.c */
     if (irq > 0 && irq < MAX_IRQS) {
         irq_pending |= (1ULL << irq);
         plic_complete(irq);

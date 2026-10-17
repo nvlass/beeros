@@ -91,7 +91,8 @@ KERNEL_SRCS = \
 	kernel/mem_natives.c \
 	kernel/virtio_blk.c \
 	kernel/blk_natives.c \
-	kernel/beer_libs.c
+	kernel/beer_libs.c \
+	kernel/console.c
 
 ifdef BEEROS_GFX
 KERNEL_SRCS   += kernel/gfx.c kernel/gfx_natives.c
@@ -192,8 +193,8 @@ run-gfx: _check_picolibc kernel/gfx_beer_blob.h
 	  -serial stdio -global virtio-mmio.force-legacy=false $(DISK_FLAGS) $(INPUT_FLAGS) \
 	  -kernel beeros.elf
 
-beeros.elf: $(BEER_ROOT)/include/beerlang.h $(OBJS)
-	$(LD) $(CFLAGS) -o $@ $(filter-out %.h,$^) $(LDFLAGS)
+beeros.elf: $(BEER_ROOT)/include/beerlang.h $(OBJS) $(PLATFORM_DIR)/boot/$(BOARD).ld
+	$(LD) $(CFLAGS) -o $@ $(filter-out %.h %.ld,$^) $(LDFLAGS)
 
 beeros.bin: beeros.elf
 	$(OBJCOPY) -O binary $< $@

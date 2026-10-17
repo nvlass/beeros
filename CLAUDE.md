@@ -25,7 +25,8 @@ Everything else (VM, compiler, GC, types, channels, actors, stdlib) compiles unc
 `NOTE: ... not found`). beeros embeds `beerlang/lib/core.beer` via `xxd` and
 loads it into `beer.core` right after `namespace_init()` — it defines `defn`,
 `ns`, `let` (destructuring), `when`, `loop`, `->` etc., which `lib/mem.beer` and
-`lib/gfx.beer` need. All of them go through `beer_load_blob()` (`kernel/blob_loader.c`),
+`lib/gfx.beer` need. Boot uses `namespace_init_bare()` (no file search, no NOTE).
+All of them go through `beer_load_blob()` (`kernel/blob_loader.c`),
 which restores both the registry's current ns and `beer.core/*ns*` afterwards
 (they must agree, or `*ns*` reads stale inside library code).
 Every function compiled at boot or at the REPL gets `function_set_ns_name()` so
@@ -56,6 +57,7 @@ beeros/
 │   ├── virtio_blk.h / .c     ← C virtio-blk driver (virtio-mmio, modern transport)
 │   ├── blk_natives.h / .c    ← beer.blk.native namespace + lib/blk.beer loader
 │   ├── beer_libs.h / .c      ← loads the pure-beerlang libs (BEER_LIBS in the Makefile)
+│   ├── console.h / .c        ← UART receive ring, interrupt keys, beer.tty natives
 │   └── repl_uart.c            ← REPL entry; boots core.beer, mem, blk, then optional gfx
 ├── lib/
 │   ├── mem.beer       ← MMIO helpers + named MMIO constants
@@ -63,7 +65,7 @@ beeros/
 │   ├── virtio.beer    ← beer.virtio: virtio-mmio transport + split virtqueues
 │   ├── virtio_blk.beer ← beer.virtio-blk: virtio-blk driver in beerlang (boot default)
 │   ├── ext2.beer      ← beer.ext2: read-only ext2 over a block-device map
-│   ├── fs.beer        ← beer.fs: mount table, path ops, load-file; mounts / at boot
+│   ├── fs.beer        ← beer.fs: mount table, path ops, beer.core/*fs* hook; mounts / at boot
 │   ├── input.beer     ← beer.input: event queue, held keys, key->char
 │   ├── virtio_input.beer ← beer.virtio-input: keyboard/mouse/tablet driver
 │   ├── tty.beer       ← beer.tty: ttys (keystroke source + ANSI sink); serial tty
@@ -207,8 +209,9 @@ ext2, chosen over FAT32/littlefs/etc. — comparison and staged plan in
 `docs/filesystem.md`. `lib/ext2.beer` is read-only so far:
 `(beer.ext2/mount dev)`, `ls`, `slurp`, `read-bytes`, `stat`/`lstat`,
 `readlink`. `lib/fs.beer` (`beer.fs`) mounts the first ext2 device at `/`
-at boot and offers `ls`/`slurp`/`stat`/`mount!`/`load-file` on absolute
-paths. It also wraps `beer.core/require` so namespaces load from `/lib`
+at boot and offers `ls`/`slurp`/`stat`/`mount!` on absolute paths. It
+installs beerlang's file hook `beer.core/*fs*` and sets `*load-path*` to
+`["/lib/"]`, so beerlang's own `require`/`load-file`/`slurp` read from it
 (see `docs/filesystem.md`), and runs `/etc/init.beer` once all libs are
 loaded. Refuses incompat features other than `filetype` (so ext3/4
 images are rejected, not misread). Build images with e2fsprogs
@@ -236,8 +239,20 @@ Design and keys: `docs/console.md`. The REPL reads every form through
 (`beer.lineedit/enabled?` false) and uses its C reader, `(beer.lineedit/enable!)`
 re-enables. Editor forms skip the C bracket check (the editor knows `\(`
 char literals, the C check doesn't). The serial tty decodes VT100/xterm
-input and also accepts `beer.input` keyboards. `def` takes no docstring in
-beerlang: `(def x "doc" v)` silently binds the string.
+input and also accepts `beer.input` keyboards.
+
+**Interrupts.** UART receive is interrupt-driven (`kernel/console.c`: ring
+buffer, `uart_rx_isr` in the board HAL, PLIC IRQ 10). `Ctrl-\`, a serial
+BREAK and Ctrl-Alt-Esc always call `vm_request_interrupt()`; `Ctrl-C` does
+while a form runs (`beer.tty/ctrl-c-interrupts!` turns that off). beerlang
+unwinds the REPL's form (finally yes, catch no); the REPL then calls
+`beer.tty/recover!`. Test BREAK with QMP `chardev-send-break` (id
+`serial0`). `mem_trap_handler` halts with mcause/mepc on an exception.
+
+**Linker script.** `.tbss` is NOBITS and takes no address space, but `tp`
+points at the one TLS copy, so `virt-riscv.ld` reserves it
+(`.tbss_space`); without that `.bss` can start on top of it and `errno`
+writes land in the first `.bss` variable.
 
 ## Graphics driver (`beer.gfx`)
 

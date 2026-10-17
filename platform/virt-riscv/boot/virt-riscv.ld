@@ -41,6 +41,14 @@ SECTIONS {
     /* tp (thread pointer) points to the start of the TLS block */
     __tls_base = __tdata_start;
 
+    /* A NOBITS TLS section takes no address space (each thread would get
+     * its own copy), but tp points at this one copy: reserve it, or .bss
+     * can start on top of it and errno writes land in .bss variables
+     * (as picolibc's own picolibc.ld does) */
+    .tbss_space (NOLOAD) : {
+        . = . + SIZEOF(.tbss);
+    } > RAM
+
     .bss : ALIGN(8) {
         _bss_start = .;
         *(.bss*)

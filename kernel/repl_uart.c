@@ -438,6 +438,8 @@ void beeros_main(void) {
     uart_puts("[beeros] gfx ready\r\n");
 #endif
 
+    beer_run_init();
+
     uart_puts("[beeros] ready\r\n");
 
     run_repl();

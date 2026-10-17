@@ -1,5 +1,8 @@
 ;; beer.lineedit — line editor for the REPL (any beer.tty)
 ;;
+;; (read-form prompt) edits on beer.tty/current; (read-form tty prompt) on
+;; the given tty, so REPLs on different ttys don't share one.
+;;
 ;; Emacs-style keys, history, tab completion of symbols, paren matching,
 ;; multi-line forms. The REPL (kernel/repl_uart.c) calls read-form for
 ;; every input; if it throws, the REPL falls back to its built-in reader
@@ -24,7 +27,7 @@
 (def csi (str esc "["))
 (def continuation-prompt "...   ")
 
-(defn out! [& xs] (beer.tty/write! (apply str xs)))
+(defn out! [st & xs] ((:write! (:tty st)) (apply str xs)))
 
 (defn chars [s] (if (= s "") [] (vec (beer.string/split s ""))))
 (defn join [cs] (apply str cs))
@@ -90,7 +93,7 @@
                     (join (subvec buf (inc hl))))
                (join buf))
         back (- (count buf) pos)]
-    (out! "\r" (:prompt st) line csi "K" (if (> back 0) (str csi back "D") ""))))
+    (out! st "\r" (:prompt st) line csi "K" (if (> back 0) (str csi back "D") ""))))
 
 ;; ── words and symbols ─────────────────────────────────────────────────────
 
@@ -149,7 +152,7 @@
       (let [cp  (common-prefix cands)
             ins (chars (subs cp (count prefix)))]
         (if (and (empty? ins) (= (:last st) :tab))
-          (do (out! "\r\n" (beer.string/join "  " (take 60 cands))
+          (do (out! st "\r\n" (beer.string/join "  " (take 60 cands))
                     (if (> (count cands) 60) (str "  ... (" (count cands) ")") "") "\r\n")
               st)
           (assoc st :buf (vec (concat (subvec buf 0 pos) ins (subvec buf pos)))
@@ -217,23 +220,24 @@
       (or (plain :up) (ctrl :p))    (history-move st -1)
       (or (plain :down) (ctrl :n))  (history-move st 1)
       (plain :tab)                  (complete st)
-      (ctrl :l)                     (do (out! csi "H" csi "2J") st)
+      (ctrl :l)                     (do (out! st csi "H" csi "2J") st)
       :else                         st)))
 
 (defn read-line
   "Edit one line after prompt. Returns the string, or nil on C-c."
-  [prompt]
-  (let [st0 {:prompt prompt :buf [] :pos 0 :hist nil :saved [] :last nil}]
+  ([prompt] (read-line @beer.tty/current prompt))
+  ([tty prompt]
+  (let [st0 {:tty tty :prompt prompt :buf [] :pos 0 :hist nil :saved [] :last nil}]
     (render! st0)
     (loop [st st0]
-      (let [k  (beer.tty/read-key)
+      (let [k  ((:read-key tty))
             r  (handle st k)]
         (cond
-          (:done r)   (do (render! (assoc st :final? true)) (out! "\r\n") (:done r))
-          (:cancel r) (do (out! "^C\r\n") nil)
+          (:done r)   (do (render! (assoc st :final? true)) (out! st "\r\n") (:done r))
+          (:cancel r) (do (out! st "^C\r\n") nil)
           :else       (let [r (assoc r :last (:key k))]
                         (render! r)
-                        (recur r)))))))
+                        (recur r))))))))
 
 (defn remember! [s]
   (let [line (beer.string/trim (beer.string/replace s "\n" " "))]
@@ -244,13 +248,14 @@
 (defn read-form
   "Read lines until they form a complete form; returns them joined with
   newlines (and a trailing one), or \"\" if cancelled."
-  [prompt]
+  ([prompt] (read-form @beer.tty/current prompt))
+  ([tty prompt]
   (loop [lines [] p prompt]
-    (let [line (read-line p)]
+    (let [line (read-line tty p)]
       (if (nil? line)
         ""
         (let [lines (conj lines line)
               text  (beer.string/join "\n" lines)]
           (if (or (form-complete? text) (= (beer.string/trim text) ""))
             (do (remember! text) (str text "\n"))
-            (recur lines continuation-prompt)))))))
+            (recur lines continuation-prompt))))))))

@@ -134,7 +134,8 @@ beerlang's pure libraries (`beer.string`, `json`, `test`, `digest`, `crypto`, `t
 `/lib/beer/`; natives that open host files, like `beer.digest/random-bytes`
 reading `/dev/urandom`, still fail); `make run-disk` boots with it. Layout: `/etc` (`init.beer`,
 `beeros.edn`), `/lib`, `/bin`, `/share/fonts`, `/var`. After all embedded
-libraries load, `/etc/init.beer` runs (`beer.fs/run-init!`); errors in it
+libraries load (and gfx, in graphics builds), `/etc/init.beer` runs
+(`beer.fs/run-init!`, called by `beer_run_init()`); errors in it
 are printed, not fatal.
 
 beerlang's `load-file` leaves a file's `(ns ...)` current afterwards

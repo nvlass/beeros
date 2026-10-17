@@ -1,0 +1,395 @@
+;; beer.term — a VT100/xterm-subset terminal emulator on the framebuffer
+;;
+;; A term is an atom holding a grid of cells, the cursor and the parser
+;; state, drawn into a rectangle of the screen. Text goes in through a
+;; queue (write!, safe from any task) or the captured output of a task;
+;; one renderer task (start!) feeds both to the emulator, so only it ever
+;; draws. (tty t) is a beer.tty map, so the line editor runs on it.
+;;
+;;   (def t (make {:cols 80 :rows 45 :scale 2}))
+;;   (start! t)                     ; renderer task
+;;   (write! t "\e[1;32mhello\e[0m\r\n")
+;;   (spawn (fn [] (repl t)))       ; a REPL on the terminal
+;;
+;; Understood: printable text with deferred wrap and scrolling; CR LF BS
+;; TAB BEL; ESC 7/8/c; CSI A B C D E F G H f d J K S T s u m (bold,
+;; inverse, 16/256/rgb colours), ?25h/l. Not yet: scroll regions,
+;; insert/delete line and char, alternate screen.
+
+(ns beer.term
+  (:require [beer.font]))
+
+;; ── colours ───────────────────────────────────────────────────────────────
+
+(def palette
+  [0x000000 0xCD0000 0x00CD00 0xCDCD00 0x0000EE 0xCD00CD 0x00CDCD 0xE5E5E5
+   0x7F7F7F 0xFF0000 0x00FF00 0xFFFF00 0x5C5CFF 0xFF00FF 0x00FFFF 0xFFFFFF])
+
+(def rgb-flag 0x1000000)   ; a colour above this is 0xRRGGBB, not an index
+
+(defn level [v] (if (= v 0) 0 (+ 55 (* 40 v))))
+
+(defn color-256 [n]
+  (cond (< n 16)  (nth palette n)
+        (< n 232) (let [n (- n 16)]
+                    (beer.gfx/rgb (level (quot n 36)) (level (rem (quot n 6) 6)) (level (rem n 6))))
+        :else     (let [v (+ 8 (* 10 (- n 232)))] (beer.gfx/rgb v v v))))
+
+(defn resolve-color [c bold?]
+  (if (>= c rgb-flag)
+    (- c rgb-flag)
+    (color-256 (if (and bold? (< c 8)) (+ c 8) c))))
+
+;; ── state ─────────────────────────────────────────────────────────────────
+
+(def space (first " "))
+
+(defn pen-colors
+  "[fg bg] as 0xRRGGBB for the current SGR state."
+  [st]
+  (let [fg (resolve-color (:fg st) (:bold? st))
+        bg (resolve-color (:bg st) false)]
+    (if (:inverse? st) [bg fg] [fg bg])))
+
+(defn blank [st] (let [[_ bg] (pen-colors st)] [space (resolve-color (:default-fg st) false) bg]))
+
+(defn blank-row [st] (vec (repeat (:cols st) (blank st))))
+
+(defn make
+  "A terminal. Options: :x :y (pixels, 0), :cols :rows (default: fill the
+  screen), :font (beer.font map, default the builtin 8x8), :scale (2),
+  :fg :bg (palette indexes, 7 and 0)."
+  [opts]
+  (let [font  (or (:font opts) (beer.font/builtin))
+        scale (get opts :scale 2)
+        cw    (* scale (:width font))
+        ch    (* scale (:height font))
+        x     (get opts :x 0)
+        y     (get opts :y 0)
+        cols  (get opts :cols (quot (- (beer.gfx/width) x) cw))
+        rows  (get opts :rows (quot (- (beer.gfx/height) y) ch))
+        fg    (get opts :fg 7)
+        bg    (get opts :bg 0)
+        st    {:x x :y y :cols cols :rows rows :font font :scale scale :cw cw :ch ch
+               :default-fg fg :default-bg bg :fg fg :bg bg :bold? false :inverse? false
+               :cx 0 :cy 0 :wrap? false :saved nil :cursor? true :drawn-cursor nil
+               :mode :ground :params ""}
+        st    (assoc st :cells (vec (repeat rows (blank-row st))))]
+    (atom (assoc st :queue [] :slots [] :task nil))))
+
+;; ── drawing ───────────────────────────────────────────────────────────────
+
+(defn draw-cell! [st col row cell inverse?]
+  (let [[c fg bg] cell]
+    (beer.font/draw-glyph! (:font st) (+ (:x st) (* col (:cw st))) (+ (:y st) (* row (:ch st)))
+                           (beer.font/glyph (:font st) (int c))
+                           (if inverse? bg fg) (if inverse? fg bg) (:scale st))))
+
+(defn cell-at [st col row] (nth (nth (:cells st) row) col))
+
+(defn hide-cursor [st]
+  (let [d (:drawn-cursor st)]
+    (when d
+      (let [[col row] d]
+        (when (and (< col (:cols st)) (< row (:rows st)))
+          (draw-cell! st col row (cell-at st col row) false))))
+    (assoc st :drawn-cursor nil)))
+
+(defn show-cursor [st]
+  (if (:cursor? st)
+    (let [col (min (:cx st) (dec (:cols st))) row (:cy st)]
+      (draw-cell! st col row (cell-at st col row) true)
+      (assoc st :drawn-cursor [col row]))
+    st))
+
+(defn redraw!
+  "Draw every cell (after the screen was drawn over)."
+  [t]
+  (let [st @t]
+    (loop [row 0]
+      (when (< row (:rows st))
+        (loop [col 0]
+          (when (< col (:cols st))
+            (draw-cell! st col row (cell-at st col row) false)
+            (recur (inc col))))
+        (recur (inc row))))
+    (reset! t (show-cursor (assoc st :drawn-cursor nil)))
+    nil))
+
+;; ── grid operations (update cells and pixels together) ────────────────────
+
+(defn erase-cells
+  "Blank columns [from, to) of row."
+  [st row from to]
+  (if (>= from to)
+    st
+    (let [b   (blank st)
+          [_ _ bg] b]
+      (beer.gfx/fill-rect! (+ (:x st) (* from (:cw st))) (+ (:y st) (* row (:ch st)))
+                           (* (- to from) (:cw st)) (:ch st) bg)
+      (assoc st :cells
+             (assoc (:cells st) row
+                    (let [r (nth (:cells st) row)]
+                      (vec (concat (subvec r 0 from) (repeat (- to from) b) (subvec r to)))))))))
+
+(defn erase-rows [st from to]   ; rows [from, to)
+  (loop [st st row from]
+    (if (>= row to) st (recur (erase-cells st row 0 (:cols st)) (inc row)))))
+
+(defn scroll-up [st n]
+  (let [n (min n (:rows st)) keep (- (:rows st) n)]
+    (when (> keep 0)
+      (beer.gfx/copy-rect! (:x st) (+ (:y st) (* n (:ch st))) (* (:cols st) (:cw st))
+                           (* keep (:ch st)) (:x st) (:y st)))
+    (erase-rows (assoc st :cells (vec (concat (subvec (:cells st) n)
+                                              (repeat n (blank-row st)))))
+                keep (:rows st))))
+
+(defn scroll-down [st n]
+  (let [n (min n (:rows st)) keep (- (:rows st) n)]
+    (when (> keep 0)
+      (beer.gfx/copy-rect! (:x st) (:y st) (* (:cols st) (:cw st))
+                           (* keep (:ch st)) (:x st) (+ (:y st) (* n (:ch st)))))
+    (erase-rows (assoc st :cells (vec (concat (repeat n (blank-row st))
+                                              (subvec (:cells st) 0 keep))))
+                0 n)))
+
+(defn line-feed [st]
+  (if (>= (:cy st) (dec (:rows st)))
+    (scroll-up st 1)
+    (assoc st :cy (inc (:cy st)))))
+
+(defn put-char [st c]
+  (let [st (if (:wrap? st) (assoc (line-feed st) :cx 0 :wrap? false) st)
+        [fg bg] (pen-colors st)
+        cell [c fg bg]
+        col  (:cx st) row (:cy st)]
+    (draw-cell! st col row cell false)
+    (let [st (assoc st :cells (assoc-in (:cells st) [row col] cell))]
+      (if (>= col (dec (:cols st)))
+        (assoc st :wrap? true)
+        (assoc st :cx (inc col))))))
+
+(defn move-to [st col row]
+  (assoc st :cx (max 0 (min col (dec (:cols st))))
+            :cy (max 0 (min row (dec (:rows st))))
+            :wrap? false))
+
+;; ── SGR ───────────────────────────────────────────────────────────────────
+
+(defn sgr [st ps]
+  (loop [st st ps (if (empty? ps) [0] ps)]
+    (if (empty? ps)
+      st
+      (let [p (or (first ps) 0) more (rest ps)]
+        (cond
+          (= p 0)  (recur (assoc st :fg (:default-fg st) :bg (:default-bg st)
+                                 :bold? false :inverse? false) more)
+          (= p 1)  (recur (assoc st :bold? true) more)
+          (= p 22) (recur (assoc st :bold? false) more)
+          (= p 7)  (recur (assoc st :inverse? true) more)
+          (= p 27) (recur (assoc st :inverse? false) more)
+          (and (>= p 30) (<= p 37))   (recur (assoc st :fg (- p 30)) more)
+          (and (>= p 90) (<= p 97))   (recur (assoc st :fg (- p 82)) more)
+          (and (>= p 40) (<= p 47))   (recur (assoc st :bg (- p 40)) more)
+          (and (>= p 100) (<= p 107)) (recur (assoc st :bg (- p 92)) more)
+          (= p 39) (recur (assoc st :fg (:default-fg st)) more)
+          (= p 49) (recur (assoc st :bg (:default-bg st)) more)
+          (or (= p 38) (= p 48))
+          (let [k   (if (= p 38) :fg :bg)
+                sub (first more)]
+            (cond (= sub 5) (recur (assoc st k (or (second more) 0)) (drop 2 more))
+                  (= sub 2) (let [[r g b] (take 3 (rest more))]
+                              (recur (assoc st k (+ rgb-flag (beer.gfx/rgb (or r 0) (or g 0) (or b 0))))
+                                     (drop 4 more)))
+                  :else st))
+          :else (recur st more))))))
+
+;; ── control sequences ─────────────────────────────────────────────────────
+
+(defn parse-params [s]
+  (vec (map (fn [p] (when (not= p "") (let [n (read-string p)] (when (number? n) n))))
+            (beer.string/split s ";"))))
+
+(defn csi [st final]
+  (let [raw  (:params st)
+        priv (and (> (count raw) 0) (= (subs raw 0 1) "?"))
+        ps   (parse-params (if priv (subs raw 1) raw))
+        n    (fn [i dflt] (let [v (get ps i)] (if (or (nil? v) (= v 0)) dflt v)))
+        z    (fn [i] (or (get ps i) 0))
+        cx (:cx st) cy (:cy st)
+        st (assoc st :mode :ground :params "")]
+    (cond
+      priv (cond (and (= final "h") (= (z 0) 25)) (assoc st :cursor? true)
+                 (and (= final "l") (= (z 0) 25)) (assoc st :cursor? false)
+                 :else st)
+      (= final "A") (move-to st cx (- cy (n 0 1)))
+      (= final "B") (move-to st cx (+ cy (n 0 1)))
+      (= final "C") (move-to st (+ cx (n 0 1)) cy)
+      (= final "D") (move-to st (- (min cx (dec (:cols st))) (n 0 1)) cy)
+      (= final "E") (move-to st 0 (+ cy (n 0 1)))
+      (= final "F") (move-to st 0 (- cy (n 0 1)))
+      (= final "G") (move-to st (dec (n 0 1)) cy)
+      (= final "d") (move-to st cx (dec (n 0 1)))
+      (or (= final "H") (= final "f")) (move-to st (dec (n 1 1)) (dec (n 0 1)))
+      (= final "J") (let [m (z 0) cx (min cx (:cols st))]
+                      (cond (= m 0) (erase-rows (erase-cells st cy cx (:cols st)) (inc cy) (:rows st))
+                            (= m 1) (erase-cells (erase-rows st 0 cy) cy 0 (min (inc cx) (:cols st)))
+                            :else   (erase-rows st 0 (:rows st))))
+      (= final "K") (let [m (z 0) cx (min cx (:cols st))]
+                      (cond (= m 0) (erase-cells st cy cx (:cols st))
+                            (= m 1) (erase-cells st cy 0 (min (inc cx) (:cols st)))
+                            :else   (erase-cells st cy 0 (:cols st))))
+      (= final "S") (scroll-up st (n 0 1))
+      (= final "T") (scroll-down st (n 0 1))
+      (= final "m") (sgr st ps)
+      (= final "s") (assoc st :saved [cx cy])
+      (= final "u") (let [[x y] (or (:saved st) [0 0])] (move-to st x y))
+      :else st)))
+
+(defn reset-state [st]
+  (let [st (assoc st :fg (:default-fg st) :bg (:default-bg st) :bold? false :inverse? false
+                  :cursor? true :saved nil)]
+    (move-to (erase-rows st 0 (:rows st)) 0 0)))
+
+(defn feed-char [st c]
+  (let [mode (:mode st) code (int c)]
+    (cond
+      (= mode :csi)
+      (cond (and (>= code 0x40) (<= code 0x7E)) (csi st (str c))
+            (= code 27) (assoc st :mode :esc :params "")
+            (< code 32) st
+            :else (assoc st :params (str (:params st) c)))
+
+      (= mode :esc)
+      (let [st (assoc st :mode :ground)]
+        (cond (= code 91) (assoc st :mode :csi :params "")       ; [
+              (= code 55) (assoc st :saved [(:cx st) (:cy st)])  ; 7
+              (= code 56) (let [[x y] (or (:saved st) [0 0])] (move-to st x y))   ; 8
+              (= code 99) (reset-state st)                       ; c
+              (= code 68) (line-feed st)                         ; D index
+              (= code 77) (if (= (:cy st) 0) (scroll-down st 1)  ; M reverse index
+                            (assoc st :cy (dec (:cy st))))
+              (= code 69) (assoc (line-feed st) :cx 0)           ; E next line
+              :else st))
+
+      (= code 27) (assoc st :mode :esc)
+      (= code 13) (assoc st :cx 0 :wrap? false)
+      (or (= code 10) (= code 11) (= code 12)) (assoc (line-feed st) :wrap? false)
+      (= code 8)  (assoc st :cx (max 0 (dec (min (:cx st) (dec (:cols st))))) :wrap? false)
+      (= code 9)  (move-to st (min (dec (:cols st)) (* 8 (inc (quot (:cx st) 8)))) (:cy st))
+      (< code 32) st
+      (= code 127) st
+      :else (put-char st c))))
+
+(defn feed
+  "The state after writing string s (drawing as it goes)."
+  [st s]
+  (let [n (count s)]
+    (loop [st (hide-cursor st) i 0]
+      (if (< i n) (recur (feed-char st (nth s i)) (inc i)) (show-cursor st)))))
+
+;; ── input side ────────────────────────────────────────────────────────────
+
+(defn write!
+  "Queue text for the terminal (any task); the renderer draws it."
+  [t s]
+  (swap! t (fn [st] (assoc st :queue (conj (:queue st) s))))
+  nil)
+
+(defn attach-output!
+  "Draw what the task that owns slot (beer.tty/capture-output!) prints."
+  [t slot]
+  (swap! t (fn [st] (assoc st :slots (conj (:slots st) slot))))
+  nil)
+
+(defn pending-text [t]
+  (let [st @t
+        q  (:queue st)
+        outs (filter (fn [s] s) (map beer.tty/take-output (:slots st)))]
+    (when (not (empty? q))
+      (swap! t (fn [st] (assoc st :queue (vec (drop (count q) (:queue st)))))))
+    (apply str (concat outs q))))
+
+(defn render-once!
+  "Draw what is pending; true if there was something."
+  [t]
+  (let [s (pending-text t)]
+    (if (= s "")
+      false
+      (do (swap! t (fn [st] (feed st s))) true))))
+
+(def render-idle-ms 10)
+
+(defn start!
+  "Spawn the renderer task (once)."
+  [t]
+  (when (nil? (:task @t))
+    (redraw! t)
+    (let [task (spawn (fn []
+                        (loop []
+                          (when (not (render-once! t)) (sleep render-idle-ms))
+                          (recur))))]
+      (swap! t (fn [st] (assoc st :task task)))))
+  t)
+
+(defn read-key
+  "Next keystroke from the beer.input keyboards (yields while none)."
+  []
+  (loop []
+    (let [ev (beer.input/poll-event)
+          k  (when ev (beer.tty/event->keystroke ev))]
+      (cond k k
+            ev (recur)
+            :else (do (sleep render-idle-ms) (recur))))))
+
+(defn tty
+  "A beer.tty for the terminal: keys from beer.input, text to the term."
+  [t]
+  {:name "term" :read-key read-key :write! (fn [s] (write! t s))})
+
+;; ── a REPL on the terminal ────────────────────────────────────────────────
+
+(defn read-all [text] (read-string (str "[" text "\n]")))
+
+(defn eval-here
+  "eval runs the form in a task of its own, whose output isn't captured;
+  compile it to a fn instead and call that in this task. defmacro only
+  works at the top level, so it goes to eval."
+  [form]
+  (if (and (list? form) (= (first form) 'defmacro))
+    (eval form)
+    ((eval (list 'fn [] form)))))
+
+(defn error-text [e]
+  (if (map? e) (str "Error: " (or (:message e) (pr-str e))) (str "Error: " (pr-str e))))
+
+(defn repl
+  "Read-eval-print on the terminal, forever. Run it in its own task:
+  (spawn (fn [] (repl t))). Its printed output goes to the terminal; the line
+  editor writes there through print too, so the two stay in order."
+  [t]
+  (let [slot (beer.tty/capture-output!)
+        tty  (assoc (tty t) :write! (fn [s] (print s)))]
+    (attach-output! t slot)
+    (reset! beer.tty/use-keyboard? false)   ; the keyboard is ours now
+    (println "beeros terminal REPL. Shares the image (and the current ns) with serial.")
+    (try
+      (loop [n 1]
+        (try
+          (doseq [form (read-all (beer.lineedit/read-form tty (str *ns* ":" n "> ")))]
+            (println (str "=> " (pr-str (eval-here form)))))
+          (catch e (println (error-text e))))
+        (recur (inc n)))
+      (finally (beer.tty/release-output! slot)))))
+
+(defn start-repl!
+  "A full-screen terminal with a REPL; returns the term."
+  ([] (start-repl! {}))
+  ([opts]
+   (let [t (make opts)]
+     (beer.gfx/fill-rect! (:x @t) (:y @t) (* (:cols @t) (:cw @t)) (* (:rows @t) (:ch @t))
+                          (resolve-color (:default-bg @t) false))
+     (start! t)
+     (spawn (fn [] (repl t)))
+     t)))

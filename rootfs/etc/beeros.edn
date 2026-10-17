@@ -1,4 +1,7 @@
 ;; beeros configuration, read by /etc/init.beer
 {:hostname "beerbox"
  :motd     "Welcome to beeros. (beer.fs/ls \"/\") to look around."
- :keyboard {:layout :us}}
+ :keyboard {:layout :us}
+ ;; :term: a terminal REPL on the screen when there is one (false: none).
+ ;; Options: :scale :cols :rows :x :y :fg :bg (palette indexes)
+ :console  {:term {:scale 2}}}

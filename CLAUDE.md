@@ -74,6 +74,7 @@ beeros/
 │   ├── lineedit.beer  ← beer.lineedit: REPL line editor (history, completion)
 │   └── gfx.beer       ← beerlang drawing library
 ├── rootfs/            ← root filesystem contents (etc/init.beer, etc/beeros.edn, lib/, bin/)
+│   └── lib/beer/      ← term.beer (beer.term: VT100 emulator + REPL), font.beer (PSF fonts)
 ├── packages/<name>/   ← sample packages (beer.edn, src/, assets/) → /pkg/<name>.tar
 ├── scripts/qemu-drive.py ← scripted REPL + monitor/QMP input for QEMU tests
 └── Makefile
@@ -216,8 +217,8 @@ ext2, chosen over FAT32/littlefs/etc. — comparison and staged plan in
 at boot and offers `ls`/`slurp`/`stat`/`mount!` on absolute paths. It
 installs beerlang's file hook `beer.core/*fs*` and sets `*load-path*` to
 `["/lib/"]`, so beerlang's own `require`/`load-file`/`slurp` read from it
-(see `docs/filesystem.md`), and runs `/etc/init.beer` once all libs are
-loaded. Refuses incompat features other than `filetype` (so ext3/4
+(see `docs/filesystem.md`). `/etc/init.beer` runs last at boot
+(`beer_run_init()`, after gfx) and starts the terminal REPL. Refuses incompat features other than `filetype` (so ext3/4
 images are rejected, not misread). Build images with e2fsprogs
 (`brew install e2fsprogs`, keg-only in `/opt/homebrew/opt/e2fsprogs/sbin`):
 `mke2fs -t ext2 -d rootdir/ disk.img 8M`. QEMU needs `-m 256M` (from
@@ -268,6 +269,16 @@ points at the one TLS copy, so `virt-riscv.ld` reserves it
 (`.tbss_space`); without that `.bss` can start on top of it and `errno`
 writes land in the first `.bss` variable.
 
+**Terminal.** `beer.term` (`rootfs/lib/beer/term.beer`, on the disk) is a
+VT100-subset emulator on the framebuffer; `/etc/init.beer` starts a REPL
+on it (`:console {:term ...}` in `/etc/beeros.edn`) as a background task
+next to the serial REPL. Its output gets there by
+`beer.tty/capture-output!` (`kernel/console.c`: all stdout/stderr goes
+through `console_write`, which sends a captured task's bytes to its
+buffer). `eval` runs forms in a new task, so the term REPL calls
+`(eval (list 'fn [] form))` instead. Namespace and interrupts are still
+shared/serial-only (docs/console.md "Two REPLs").
+
 ## Graphics driver (`beer.gfx`)
 
 Two-layer architecture, no beerlang submodule changes:
@@ -278,7 +289,8 @@ Two-layer architecture, no beerlang submodule changes:
 - virt-riscv uses QEMU's `ramfb` device: one fw-cfg DMA handshake at boot maps the buffer to `0x84000000`. All fw-cfg registers are big-endian — including the DMA address register, so both halves are written through `be32()`.
 
 **Layer 2 — `beer.gfx` namespace** (`kernel/gfx_natives.c`, `lib/gfx.beer`):
-- Natives registered at boot: `set-pixel!`, `fill-rect!`, `width`, `height`, `rgb`, `clear!`
+- Natives registered at boot: `set-pixel!`, `fill-rect!`, `width`, `height`, `rgb`, `clear!`,
+  `blit-bits!` (1-bit bitmap from a ByteBuffer, scaled; font glyphs), `copy-rect!` (scrolling)
 - `lib/gfx.beer` embedded at build time via `xxd -i` → `kernel/gfx_beer_blob.h`, then compiled and run using the same reader→compiler→scheduler pattern as the REPL
 - Higher-level functions in `lib/gfx.beer`: `line!` (Bresenham), `circle!` (midpoint), `rect!` (outlined), `text!` (8×8 bitmap font), `color`, `clear!`
 

@@ -6,4 +6,7 @@
  * beer.blk loaded first. */
 void beer_load_libraries(void);
 
+/* Run /etc/init.beer (beer.fs/run-init!); last thing before the REPL */
+void beer_run_init(void);
+
 #endif

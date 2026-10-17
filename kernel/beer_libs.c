@@ -30,8 +30,10 @@ void beer_load_libraries(void) {
     LOAD(lib_virtio_input_beer, "lib/virtio_input.beer"); /* starts input tasks */
     LOAD(lib_tty_beer,          "lib/tty.beer");
     LOAD(lib_lineedit_beer,     "lib/lineedit.beer");     /* the REPL reads through it */
+}
 
-    /* Last, so it can use everything above */
+/* /etc/init.beer, last at boot (after gfx too) so it can use everything */
+void beer_run_init(void) {
     static const unsigned char run_init[] = "(beer.fs/run-init!)";
     beer_load_blob(run_init, sizeof run_init - 1, "<boot>", NULL);
 }

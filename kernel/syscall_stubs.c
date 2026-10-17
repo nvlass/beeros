@@ -23,13 +23,14 @@
 #include <fcntl.h>
 #include <poll.h>
 #include "uart.h"
+#include "console.h"
 
 /* ── picolibc FILE callbacks ─────────────────────────────────────────── */
 
+/* Output goes through console_write: the UART, or a task's capture */
 static int _uart_put(char c, FILE *f) {
     (void)f;
-    if (c == '\n') uart_putc('\r');
-    uart_putc(c);
+    console_write(&c, 1);
     return 0;
 }
 
@@ -96,8 +97,7 @@ ssize_t read(int fd, void *buf, size_t n) {
 
 ssize_t write(int fd, const void *buf, size_t n) {
     if (fd==1||fd==2) {
-        const char *b=buf;
-        for (size_t i=0;i<n;i++) { if(b[i]=='\n') uart_putc('\r'); uart_putc(b[i]); }
+        console_write(buf, n);
         return (ssize_t)n;
     }
     errno=EBADF; return -1;

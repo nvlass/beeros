@@ -4,6 +4,7 @@
 #define BEEROS_CONSOLE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Switch UART receive to interrupts (falls back to polling if the board
@@ -21,7 +22,12 @@ int console_getc_nonblock(char* c);
  * interrupt */
 void console_set_reading(bool reading);
 
-/* beer.tty natives: uart-byte, ctrl-c-interrupts!, ctrl-c-interrupts? */
+/* stdout/stderr bytes: to the UART (LF as CR LF), or to the capture of
+ * the running task if it called capture-output! */
+void console_write(const char* s, size_t n);
+
+/* beer.tty natives: uart-byte, ctrl-c-interrupts!, ctrl-c-interrupts?,
+ * capture-output!, take-output, release-output! */
 void console_register_natives(void);
 
 #endif

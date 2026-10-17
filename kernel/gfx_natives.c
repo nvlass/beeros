@@ -1,7 +1,7 @@
 /* gfx_natives.c — beer.gfx native namespace for beeros
  *
- * Registers the six primitive ops (set-pixel!, fill-rect!, width, height,
- * rgb, clear!) in the beer.gfx namespace, then compiles and runs the
+ * Registers the primitive ops (set-pixel!, fill-rect!, width, height,
+ * rgb, clear!, blit-bits!, copy-rect!) in the beer.gfx namespace, then compiles and runs the
  * embedded lib/gfx.beer source (Bresenham lines, circles, outlined rects,
  * 8×8 bitmap text).
  *
@@ -25,6 +25,7 @@
 #include "vm.h"
 #include "scheduler.h"
 #include "vector.h"
+#include "bytebuffer.h"
 #include "gfx.h"
 #include "uart.h"
 #include "blob_loader.h"
@@ -95,6 +96,44 @@ static Value native_gfx_clear(VM* vm, int argc, Value* argv) {
     return VALUE_NIL;
 }
 
+/* (blit-bits! x y buf off w h stride scale fg bg) — 1-bit bitmap from a
+ * ByteBuffer at off (font glyphs); bg nil = transparent */
+static Value native_gfx_blit_bits(VM* vm, int argc, Value* argv) {
+    if (argc != 10 || !is_bytebuffer(argv[2])) {
+        vm_error(vm, "blit-bits!: (blit-bits! x y buf off w h stride scale fg bg)");
+        return VALUE_NIL;
+    }
+    for (int i = 0; i < 9; i++) {
+        if (i != 2 && !is_fixnum(argv[i])) { vm_error(vm, "blit-bits!: numbers expected"); return VALUE_NIL; }
+    }
+    int64_t off = untag_fixnum(argv[3]);
+    uint32_t h = (uint32_t)untag_fixnum(argv[5]), stride = (uint32_t)untag_fixnum(argv[6]);
+    if (off < 0 || (uint64_t)off + (uint64_t)h * stride > bytebuffer_capacity(argv[2])) {
+        vm_error(vm, "blit-bits!: bitmap outside the buffer");
+        return VALUE_NIL;
+    }
+    int64_t bg = is_fixnum(argv[9]) ? untag_fixnum(argv[9]) : -1;
+    gfx_blit_bits((int32_t)untag_fixnum(argv[0]), (int32_t)untag_fixnum(argv[1]),
+                  bytebuffer_data(argv[2]) + off, (uint32_t)untag_fixnum(argv[4]), h, stride,
+                  (uint32_t)untag_fixnum(argv[7]), (uint32_t)untag_fixnum(argv[8]), bg);
+    return VALUE_NIL;
+}
+
+/* (copy-rect! sx sy w h dx dy) — e.g. scroll a text area */
+static Value native_gfx_copy_rect(VM* vm, int argc, Value* argv) {
+    if (argc != 6) { vm_error(vm, "copy-rect!: (copy-rect! sx sy w h dx dy)"); return VALUE_NIL; }
+    for (int i = 0; i < 6; i++) {
+        if (!is_fixnum(argv[i]) || untag_fixnum(argv[i]) < 0) {
+            vm_error(vm, "copy-rect!: non-negative numbers expected");
+            return VALUE_NIL;
+        }
+    }
+    gfx_copy_rect((uint32_t)untag_fixnum(argv[0]), (uint32_t)untag_fixnum(argv[1]),
+                  (uint32_t)untag_fixnum(argv[2]), (uint32_t)untag_fixnum(argv[3]),
+                  (uint32_t)untag_fixnum(argv[4]), (uint32_t)untag_fixnum(argv[5]));
+    return VALUE_NIL;
+}
+
 /* ── namespace registration ─────────────────────────────────────────────── */
 
 void gfx_register_natives(void) {
@@ -106,6 +145,8 @@ void gfx_register_natives(void) {
     reg(ns, "height",      native_gfx_height);
     reg(ns, "rgb",         native_gfx_rgb);
     reg(ns, "clear!",      native_gfx_clear);
+    reg(ns, "blit-bits!",  native_gfx_blit_bits);
+    reg(ns, "copy-rect!",  native_gfx_copy_rect);
 }
 
 /* ── load embedded lib/gfx.beer ─────────────────────────────────────────── */

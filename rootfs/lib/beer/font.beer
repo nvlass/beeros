@@ -1,0 +1,138 @@
+;; beer.font — bitmap fonts for the framebuffer
+;;
+;; A font is a map
+;;   {:width 8 :height 16 :stride 1 :bytes buf :base off :glyph-size 16
+;;    :count 256 :unicode {codepoint glyph#}}
+;; Glyph n is :height rows of :stride bytes at (+ :base (* n :glyph-size))
+;; in the ByteBuffer :bytes, leftmost pixel in bit 7, which is what
+;; beer.gfx/blit-bits! draws. Without :unicode, glyph n is codepoint
+;; (+ :first n).
+;;
+;;   (def f (load-psf "/share/fonts/foo.psf"))   ; PSF1 or PSF2
+;;   (def f (builtin))                            ; the 8x8 font of beer.gfx
+;;   (draw! f 10 10 "λ" 0xFFFFFF nil 2)
+
+(ns beer.font)
+
+(defn builtin
+  "The 8x8 font in beer.gfx (ASCII 32-126) as a font map."
+  []
+  (let [rows beer.gfx/font-data
+        n    (count rows)
+        buf  (beer.bytes/alloc (* n 8))]
+    (loop [g 0]
+      (when (< g n)
+        (let [glyph (nth rows g)]
+          (loop [r 0]
+            (when (< r 8)
+              (beer.bytes/u8! buf (+ (* g 8) r) (nth glyph r))
+              (recur (inc r)))))
+        (recur (inc g))))
+    {:width 8 :height 8 :stride 1 :bytes buf :base 0 :glyph-size 8
+     :count n :first 32 :unicode nil}))
+
+;; ── PSF ───────────────────────────────────────────────────────────────────
+
+(defn utf8-codepoints
+  "Codepoints of the UTF-8 bytes buf[from, to)."
+  [buf from to]
+  (loop [i from acc []]
+    (if (>= i to)
+      acc
+      (let [b (beer.bytes/u8 buf i)
+            n (cond (>= b 0xF0) 3 (>= b 0xE0) 2 (>= b 0xC0) 1 :else 0)
+            lead (cond (= n 3) (bit-and b 0x07) (= n 2) (bit-and b 0x0F)
+                       (= n 1) (bit-and b 0x1F) :else b)
+            cp (loop [k 1 cp lead]
+                 (if (or (> k n) (>= (+ i k) to))
+                   cp
+                   (recur (inc k) (bit-or (bit-shift-left cp 6)
+                                          (bit-and (beer.bytes/u8 buf (+ i k)) 0x3F)))))]
+        (recur (+ i 1 n) (conj acc cp))))))
+
+(defn psf2-unicode
+  "{codepoint glyph#} from a PSF2 unicode table at off: per glyph, UTF-8
+  characters, sequences after 0xFE (ignored), ended by 0xFF."
+  [buf off nglyphs]
+  (let [len (beer.bytes/capacity buf)]
+    (loop [i off g 0 start off seq? false acc {}]
+      (if (or (>= i len) (>= g nglyphs))
+        acc
+        (let [b (beer.bytes/u8 buf i)]
+          (cond
+            (= b 0xFF) (let [acc (if seq? acc (reduce (fn [m cp] (assoc m cp g)) acc
+                                                      (utf8-codepoints buf start i)))]
+                         (recur (inc i) (inc g) (inc i) false acc))
+            (= b 0xFE) (recur (inc i) g start true
+                              (if seq? acc (reduce (fn [m cp] (assoc m cp g)) acc
+                                                   (utf8-codepoints buf start i))))
+            :else      (recur (inc i) g start seq? acc)))))))
+
+(defn psf1-unicode
+  "{codepoint glyph#} from a PSF1 table: u16 codepoints per glyph, 0xFFFE
+  starts a sequence (ignored), 0xFFFF ends the glyph."
+  [buf off nglyphs]
+  (let [len (beer.bytes/capacity buf)]
+    (loop [i off g 0 seq? false acc {}]
+      (if (or (> (+ i 2) len) (>= g nglyphs))
+        acc
+        (let [u (beer.bytes/u16le buf i)]
+          (cond (= u 0xFFFF) (recur (+ i 2) (inc g) false acc)
+                (= u 0xFFFE) (recur (+ i 2) g true acc)
+                seq?         (recur (+ i 2) g true acc)
+                :else        (recur (+ i 2) g false (assoc acc u g))))))))
+
+(defn parse-psf
+  "Font map from the bytes of a PSF1 or PSF2 file."
+  [buf]
+  (cond
+    (and (= (beer.bytes/u8 buf 0) 0x72) (= (beer.bytes/u8 buf 1) 0xB5)
+         (= (beer.bytes/u8 buf 2) 0x4A) (= (beer.bytes/u8 buf 3) 0x86))
+    (let [hdr   (beer.bytes/u32le buf 8)
+          flags (beer.bytes/u32le buf 12)
+          n     (beer.bytes/u32le buf 16)
+          size  (beer.bytes/u32le buf 20)
+          h     (beer.bytes/u32le buf 24)
+          w     (beer.bytes/u32le buf 28)]
+      {:width w :height h :stride (quot (+ w 7) 8) :bytes buf :base hdr
+       :glyph-size size :count n :first 0
+       :unicode (when (not= 0 (bit-and flags 1)) (psf2-unicode buf (+ hdr (* n size)) n))})
+
+    (and (= (beer.bytes/u8 buf 0) 0x36) (= (beer.bytes/u8 buf 1) 0x04))
+    (let [mode (beer.bytes/u8 buf 2)
+          h    (beer.bytes/u8 buf 3)
+          n    (if (not= 0 (bit-and mode 1)) 512 256)]
+      {:width 8 :height h :stride 1 :bytes buf :base 4 :glyph-size h
+       :count n :first 0
+       :unicode (when (not= 0 (bit-and mode 6)) (psf1-unicode buf (+ 4 (* n h)) n))})
+
+    :else (throw (ex-info "font: not a PSF1 or PSF2 file" {:reason :bad-magic}))))
+
+(defn load-psf [path] (parse-psf (beer.fs/read-bytes path)))
+
+;; ── drawing ───────────────────────────────────────────────────────────────
+
+(defn glyph
+  "Glyph number for codepoint cp, or the one for ? (or 0)."
+  [font cp]
+  (let [u (:unicode font)
+        g (if u (get u cp) (let [g (- cp (:first font))] (when (and (>= g 0) (< g (:count font))) g)))]
+    (cond g g
+          (not= cp 63) (glyph font 63)
+          :else 0)))
+
+(defn draw-glyph!
+  "Glyph g at (x,y) in fg on bg (nil: transparent), each pixel scale x scale."
+  [font x y g fg bg scale]
+  (beer.gfx/blit-bits! x y (:bytes font) (+ (:base font) (* g (:glyph-size font)))
+                       (:width font) (:height font) (:stride font) scale fg bg))
+
+(defn draw!
+  "String s at (x,y); returns the x after it."
+  [font x y s fg bg scale]
+  (let [adv (* scale (:width font)) n (count s)]
+    (loop [i 0 x x]
+      (if (< i n)
+        (do (draw-glyph! font x y (glyph font (int (nth s i))) fg bg scale)
+            (recur (inc i) (+ x adv)))
+        x))))

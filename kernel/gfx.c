@@ -5,7 +5,9 @@
  * hardware has been told where the buffer lives.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include "gfx.h"
 
 static volatile uint32_t* g_fb   = (volatile uint32_t*)0;
@@ -37,5 +39,41 @@ void gfx_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t colo
         for (uint32_t col = 0; col < w; col++) {
             line[col] = color;
         }
+    }
+}
+
+void gfx_blit_bits(int32_t x, int32_t y, const uint8_t* bits, uint32_t w, uint32_t h,
+                   uint32_t stride, uint32_t scale, uint32_t fg, int64_t bg) {
+    if (!g_fb || scale == 0) return;
+    for (uint32_t r = 0; r < h; r++) {
+        const uint8_t* row = bits + r * stride;
+        for (uint32_t sy = 0; sy < scale; sy++) {
+            int64_t py = (int64_t)y + r * scale + sy;
+            if (py < 0 || py >= g_h) continue;
+            volatile uint32_t* line = g_fb + py * g_w;
+            for (uint32_t c = 0; c < w; c++) {
+                bool on = row[c >> 3] & (0x80 >> (c & 7));
+                if (!on && bg < 0) continue;
+                uint32_t color = on ? fg : (uint32_t)bg;
+                for (uint32_t sx = 0; sx < scale; sx++) {
+                    int64_t px = (int64_t)x + c * scale + sx;
+                    if (px >= 0 && px < g_w) line[px] = color;
+                }
+            }
+        }
+    }
+}
+
+void gfx_copy_rect(uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, uint32_t dx, uint32_t dy) {
+    if (!g_fb) return;
+    if (sx >= g_w || sy >= g_h || dx >= g_w || dy >= g_h) return;
+    uint32_t maxx = (sx > dx ? sx : dx), maxy = (sy > dy ? sy : dy);
+    if (maxx + w > g_w) w = g_w - maxx;
+    if (maxy + h > g_h) h = g_h - maxy;
+    /* rows in the order that doesn't overwrite rows still to be copied */
+    for (uint32_t i = 0; i < h; i++) {
+        uint32_t r = dy > sy ? h - 1 - i : i;
+        memmove((void*)(g_fb + (dy + r) * g_w + dx),
+                (const void*)(g_fb + (sy + r) * g_w + sx), w * 4);
     }
 }

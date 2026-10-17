@@ -148,9 +148,31 @@ kernel/core_beer_blob.h: $(BEER_ROOT)/lib/core.beer
 	{ echo 'unsigned char core_beer[] = {'; xxd -i < $<; echo '};'; \
 	  echo "unsigned int core_beer_len = $$(wc -c < $< | tr -d ' ');"; } > $@
 
-.PHONY: all clean disasm run run-gfx _check_picolibc
+.PHONY: all clean disasm run run-gfx disk run-disk _check_picolibc
 
 all: _check_picolibc beeros.bin
+
+# ── root filesystem image ─────────────────────────────────────────────────
+# rootfs/ (checked in) + pure-beerlang libs from beerlang/lib/beer → ext2.
+MKE2FS     ?= $(firstword $(wildcard /opt/homebrew/opt/e2fsprogs/sbin/mke2fs /usr/local/opt/e2fsprogs/sbin/mke2fs) mke2fs)
+DISK_SIZE  ?= 16M
+DISK_IMG    = build/disk.img
+ROOTFS_STAGE = build/rootfs
+ROOTFS_BEERLANG_LIBS = string json test
+ROOTFS_DIRS = bin etc lib/beer share/fonts var
+
+disk: $(DISK_IMG)
+
+$(DISK_IMG): $(shell find rootfs -type f) $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS))
+	rm -rf $(ROOTFS_STAGE) $@
+	mkdir -p $(addprefix $(ROOTFS_STAGE)/,$(ROOTFS_DIRS))
+	cp -R rootfs/. $(ROOTFS_STAGE)/
+	cp $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS)) $(ROOTFS_STAGE)/lib/beer/
+	$(MKE2FS) -q -t ext2 -L beeros -d $(ROOTFS_STAGE) $@ $(DISK_SIZE)
+
+# make run-disk: build the rootfs image and boot with it attached
+run-disk: disk
+	$(MAKE) run BOARD=$(BOARD) DISK=$(DISK_IMG)
 
 # DISK=path/to/image.img attaches a raw image as a virtio-blk device
 DISK_FLAGS = $(if $(DISK),-drive file=$(DISK),if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0)

@@ -95,11 +95,8 @@ pagers) works on screen unchanged.
 - **Config: EDN** in `/etc/beeros.edn` (`read-string` of the file), e.g.
   `{:console {:font "/share/fonts/ter-v16n.psf" :tty :fb} :keyboard
   {:layout :us}}`, read at boot.
-- **Boot script**: `/etc/init.beer`, loaded with `beer.fs/load-file` after
-  mounting `/` (where the editor will eventually start).
-- **Layout**: `/lib` (beerlang namespaces, for `require` once beerlang
-  has the source hook), `/etc` (config, init), `/share/fonts`, `/bin`
-  (runnable scripts), `/var` (history, logs; needs writes).
-
-`make disk` would build `disk.img` from a `rootfs/` directory in the repo
-with `mke2fs -d`.
+- **Boot script**: `/etc/init.beer` (done; see `docs/filesystem.md`) —
+  where the editor will eventually start.
+- **Layout** (done, `make disk` from `rootfs/`): `/lib` (namespaces for
+  `require`), `/etc` (config, init), `/share/fonts`, `/bin` (runnable
+  scripts), `/var` (history, logs; needs writes).

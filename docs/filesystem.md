@@ -112,13 +112,32 @@ At boot the first block device holding ext2 is mounted at `/`.
 Paths are absolute; the longest matching mount point wins. A filesystem
 type plugs in through `beer.fs/impls` (`{:ext2 {:ls ... :slurp ...}}`).
 
+### `require` from `/lib`
+
+`beer.fs` wraps `beer.core/require`: `foo.bar` loads from
+`/lib/foo/bar.beer` (`beer.fs/load-path`, an atom), is marked in
+`beer.core/*loaded-libs*`, and then beerlang's own `require` applies
+`:as` / `:refer` (it skips loading what is already marked). The wrapper
+also accepts Clojure's vector form `(require '[foo.bar :as fb])`, which the
+native doesn't. `ns` forms go through it too. Delete the wrapper once
+beerlang has a source-lookup hook (requested in beerlang's TODO.md).
+
+### Root filesystem
+
+`make disk` builds `build/disk.img` (ext2, 16 MB) from `rootfs/` plus
+beerlang's pure libraries (`beer.string`, `beer.json`, `beer.test` into
+`/lib/beer/`); `make run-disk` boots with it. Layout: `/etc` (`init.beer`,
+`beeros.edn`), `/lib`, `/bin`, `/share/fonts`, `/var`. After all embedded
+libraries load, `/etc/init.beer` runs (`beer.fs/run-init!`); errors in it
+are printed, not fatal.
+
 `load-file` is plain beerlang: `(read-string (str "[" src "\n]"))` reads
 every form at once (as beerlang's own `load` does), then `eval`s them in
 order and restores `*ns*`. Errors are rethrown with the path and form
 index. beerlang's `load` and `require` can't be reused as-is: `load`
 `fopen`s a host path and its buffer loader is `static`. Making `require`
 find namespaces on disk needs a source-lookup hook in beerlang (it already
-falls back to an in-memory tar index); until then use `load-file`.
+falls back to an in-memory tar index); until then beeros wraps it (above).
 
 ## Building test images
 

@@ -69,6 +69,7 @@ beeros/
 │   ├── tty.beer       ← beer.tty: ttys (keystroke source + ANSI sink); serial tty
 │   ├── lineedit.beer  ← beer.lineedit: REPL line editor (history, completion)
 │   └── gfx.beer       ← beerlang drawing library
+├── rootfs/            ← root filesystem contents (etc/init.beer, etc/beeros.edn, lib/...)
 ├── scripts/qemu-drive.py ← scripted REPL + monitor/QMP input for QEMU tests
 └── Makefile
 ```
@@ -196,7 +197,9 @@ geometry; filesystems only ever see the map. Always built (no flag).
   `(beer.virtio-blk/attach!)` / `(beer.blk/use-native-driver!)` switch at
   the REPL; one driver owns a device at a time.
 
-Attach a disk: `make run BOARD=virt-riscv DISK=disk.img` (raw image).
+Attach a disk: `make run BOARD=virt-riscv DISK=disk.img` (raw image), or
+`make run-disk` to build `build/disk.img` from `rootfs/` (+ beerlang's
+`string`/`json`/`test` libs in `/lib/beer`) and boot with it.
 
 ## Filesystem (`beer.ext2`)
 
@@ -205,7 +208,9 @@ ext2, chosen over FAT32/littlefs/etc. — comparison and staged plan in
 `(beer.ext2/mount dev)`, `ls`, `slurp`, `read-bytes`, `stat`/`lstat`,
 `readlink`. `lib/fs.beer` (`beer.fs`) mounts the first ext2 device at `/`
 at boot and offers `ls`/`slurp`/`stat`/`mount!`/`load-file` on absolute
-paths. Refuses incompat features other than `filetype` (so ext3/4
+paths. It also wraps `beer.core/require` so namespaces load from `/lib`
+(see `docs/filesystem.md`), and runs `/etc/init.beer` once all libs are
+loaded. Refuses incompat features other than `filetype` (so ext3/4
 images are rejected, not misread). Build images with e2fsprogs
 (`brew install e2fsprogs`, keg-only in `/opt/homebrew/opt/e2fsprogs/sbin`):
 `mke2fs -t ext2 -d rootdir/ disk.img 8M`. QEMU needs `-m 256M` (from

@@ -1,0 +1,6 @@
+;; (require '[demo.greet :as g]) (g/greet "you")
+(ns demo.greet
+  (:require [beer.string :as s]))
+
+(defn greet [who]
+  (str "Hello, " (s/upper-case who) "!"))

@@ -1,0 +1,9 @@
+;; /etc/init.beer — runs at boot, after / is mounted and the libraries
+;; are loaded. Edit it on the disk image to change what happens at boot.
+
+(ns beer.init)
+
+(def config (read-string (beer.fs/slurp "/etc/beeros.edn")))
+
+(when (:motd config)
+  (println (:motd config)))

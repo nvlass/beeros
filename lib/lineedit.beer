@@ -1,0 +1,256 @@
+;; beer.lineedit — line editor for the REPL (any beer.tty)
+;;
+;; Emacs-style keys, history, tab completion of symbols, paren matching,
+;; multi-line forms. The REPL (kernel/repl_uart.c) calls read-form for
+;; every input; if it throws, the REPL falls back to its built-in reader
+;; and sets enabled? to false; (enable!) turns it back on.
+;;
+;;   C-a/Home C-e/End C-b/Left C-f/Right   M-b/C-Left M-f/C-Right  move
+;;   Backspace C-d/Delete C-k C-u C-w C-y   edit / kill / yank
+;;   Up/C-p Down/C-n                        history
+;;   Tab                                    complete (twice: list candidates)
+;;   C-l clear screen   C-c cancel the form   Enter: submit when the form is complete
+
+(ns beer.lineedit)
+
+(def enabled? true)
+(defn enable! [] (def enabled? true) true)
+
+(def history     (atom []))
+(def history-max 500)
+(def kill-ring   (atom []))     ; last killed text, as chars
+
+(def esc (str (char 27)))
+(def csi (str esc "["))
+(def continuation-prompt "...   ")
+
+(defn out! [& xs] (beer.tty/write! (apply str xs)))
+
+(defn chars [s] (if (= s "") [] (vec (beer.string/split s ""))))
+(defn join [cs] (apply str cs))
+
+;; ── form structure ────────────────────────────────────────────────────────
+
+(def openers  {"(" ")" "[" "]" "{" "}"})
+(def closers  {")" "(" "]" "[" "}" "{"})
+
+(defn form-complete?
+  "Balanced brackets outside strings, comments and char literals, and
+  something other than whitespace."
+  [s]
+  (loop [cs (chars s) depth 0 in-str? false content? false]
+    (if (empty? cs)
+      (and content? (not in-str?) (<= depth 0))
+      (let [c (first cs) more (rest cs)]
+        (cond
+          in-str? (cond (= c "\\") (recur (rest more) depth true content?)
+                        (= c "\"") (recur more depth false content?)
+                        :else      (recur more depth true content?))
+          (= c "\"") (recur more depth true true)
+          (= c "\\") (recur (rest more) depth false true)      ; \( is a char
+          (= c ";")  (recur (drop-while (fn [x] (not= x "\n")) more) depth false content?)
+          (get openers c) (recur more (inc depth) false true)
+          (get closers c) (recur more (dec depth) false content?)
+          (or (= c " ") (= c "\n") (= c "\t") (= c ",")) (recur more depth false content?)
+          :else (recur more depth false true))))))
+
+(defn match-before
+  "Index of the opener matching the closer at index i of buf, or nil.
+  Brackets inside strings, comments and char literals don't count."
+  [buf i]
+  (loop [j 0 stack () in-str? false]
+    (when (<= j i)
+      (let [c (nth buf j)]
+        (cond
+          in-str? (cond (= c "\\") (recur (+ j 2) stack true)
+                        (= c "\"") (recur (inc j) stack false)
+                        :else      (recur (inc j) stack true))
+          (= c "\"") (recur (inc j) stack true)
+          (= c "\\") (recur (+ j 2) stack false)
+          (= c ";")  nil
+          (get openers c) (recur (inc j) (cons j stack) false)
+          (get closers c) (if (= j i)
+                            (let [o (first stack)]
+                              (when (and o (= (nth buf o) (get closers c))) o))
+                            (recur (inc j) (rest stack) false))
+          :else (recur (inc j) stack false))))))
+
+;; ── rendering ─────────────────────────────────────────────────────────────
+
+(defn render!
+  "Redraw prompt + line, highlight the opener matching a closer just
+  before the cursor, leave the cursor at :pos."
+  [st]
+  (let [buf  (:buf st)
+        pos  (:pos st)
+        hl   (when (and (not (:final? st)) (> pos 0) (get closers (nth buf (dec pos))))
+               (match-before buf (dec pos)))
+        line (if hl
+               (str (join (subvec buf 0 hl)) csi "7m" (nth buf hl) csi "0m"
+                    (join (subvec buf (inc hl))))
+               (join buf))
+        back (- (count buf) pos)]
+    (out! "\r" (:prompt st) line csi "K" (if (> back 0) (str csi back "D") ""))))
+
+;; ── words and symbols ─────────────────────────────────────────────────────
+
+(defn word-char? [c]
+  (not (or (= c " ") (= c "\n") (= c "\t") (= c ",") (get openers c) (get closers c)
+           (= c "\"") (= c "'") (= c "`") (= c "@") (= c "^") (= c "~"))))
+
+(defn word-left [buf pos]
+  (let [p (loop [p pos] (if (and (> p 0) (not (word-char? (nth buf (dec p))))) (recur (dec p)) p))]
+    (loop [p p] (if (and (> p 0) (word-char? (nth buf (dec p)))) (recur (dec p)) p))))
+
+(defn word-right [buf pos]
+  (let [n (count buf)
+        p (loop [p pos] (if (and (< p n) (not (word-char? (nth buf p)))) (recur (inc p)) p))]
+    (loop [p p] (if (and (< p n) (word-char? (nth buf p))) (recur (inc p)) p))))
+
+;; ── completion ────────────────────────────────────────────────────────────
+
+(def special-forms
+  ["def" "if" "do" "fn" "let" "loop" "recur" "quote" "try" "catch" "finally"
+   "throw" "spawn" "yield" "defmacro" "var"])
+
+(defn ns-names [ns-sym]
+  (try (map name (ns-publics ns-sym)) (catch e [])))
+
+(defn starts-with? [s p] (beer.string/starts-with? s p))
+
+(defn candidates [prefix]
+  (let [parts (beer.string/split prefix "/")]
+    (if (and (= (count parts) 2) (not= (first parts) ""))
+      (let [nsn (first parts)]
+        (map (fn [n] (str nsn "/" n))
+             (filter (fn [n] (starts-with? n (second parts))) (ns-names (symbol nsn)))))
+      (distinct (filter (fn [n] (starts-with? n prefix))
+                        (concat special-forms (ns-names *ns*) (ns-names 'beer.core)))))))
+
+(defn common-prefix [ss]
+  (reduce (fn [a b]
+            (let [n (min (count a) (count b))]
+              (loop [i 0] (if (and (< i n) (= (subs a i (inc i)) (subs b i (inc i)))) (recur (inc i)) (subs a 0 i)))))
+          ss))
+
+(defn complete [st]
+  (let [buf    (:buf st)
+        pos    (:pos st)
+        start  (loop [p pos] (if (and (> p 0) (word-char? (nth buf (dec p)))) (recur (dec p)) p))
+        prefix (join (subvec buf start pos))
+        cands  (sort (candidates prefix))]
+    (cond
+      (or (= prefix "") (empty? cands)) st
+      (= (count cands) 1)
+      (let [ins (chars (str (subs (first cands) (count prefix)) " "))]
+        (assoc st :buf (vec (concat (subvec buf 0 pos) ins (subvec buf pos)))
+                  :pos (+ pos (count ins))))
+      :else
+      (let [cp  (common-prefix cands)
+            ins (chars (subs cp (count prefix)))]
+        (if (and (empty? ins) (= (:last st) :tab))
+          (do (out! "\r\n" (beer.string/join "  " (take 60 cands))
+                    (if (> (count cands) 60) (str "  ... (" (count cands) ")") "") "\r\n")
+              st)
+          (assoc st :buf (vec (concat (subvec buf 0 pos) ins (subvec buf pos)))
+                    :pos (+ pos (count ins))))))))
+
+;; ── editing ───────────────────────────────────────────────────────────────
+
+(defn insert [st cs]
+  (let [buf (:buf st) pos (:pos st)]
+    (assoc st :buf (vec (concat (subvec buf 0 pos) cs (subvec buf pos)))
+              :pos (+ pos (count cs)))))
+
+(defn delete-range [st from to]           ; [from, to)
+  (let [buf (:buf st)]
+    (assoc st :buf (vec (concat (subvec buf 0 from) (subvec buf to))) :pos from)))
+
+(defn kill [st from to]
+  (reset! kill-ring (subvec (:buf st) from to))
+  (delete-range st from to))
+
+(defn history-move
+  "dir -1 = older, +1 = newer. :hist is the index being shown (nil = the
+  line being typed, saved in :saved)."
+  [st dir]
+  (let [h @history
+        n (count h)
+        i (:hist st)
+        j (cond (nil? i) (when (and (< dir 0) (> n 0)) (dec n))
+                (< dir 0) (max 0 (dec i))
+                :else     (when (< (inc i) n) (inc i)))
+        st (if (nil? i) (assoc st :saved (:buf st)) st)]
+    (if (and (nil? j) (nil? i))
+      st
+      (let [buf (if (nil? j) (:saved st) (chars (nth h j)))]
+        (assoc st :hist j :buf buf :pos (count buf))))))
+
+(defn chord [k] [(:key k) (or (:mods k) #{})])
+
+(defn handle
+  "New state for keystroke k, or a final {:done string} / {:cancel true}."
+  [st k]
+  (let [buf (:buf st) pos (:pos st) n (count buf)
+        [key mods] (chord k)
+        ctrl  (fn [x] (and (= key x) (= mods #{:ctrl})))
+        alt   (fn [x] (and (= key x) (= mods #{:alt})))
+        plain (fn [x] (and (= key x) (empty? (disj mods :shift))))]
+    (cond
+      (:char k)                     (insert st [(:char k)])
+      (plain :enter)                {:done (join buf)}
+      (ctrl :c)                     {:cancel true}
+      (or (plain :backspace) (ctrl :h))
+                                    (if (> pos 0) (delete-range st (dec pos) pos) st)
+      (or (plain :delete) (ctrl :d)) (if (< pos n) (delete-range st pos (inc pos)) st)
+      (or (plain :left) (ctrl :b))  (assoc st :pos (max 0 (dec pos)))
+      (or (plain :right) (ctrl :f)) (assoc st :pos (min n (inc pos)))
+      (or (plain :home) (ctrl :a))  (assoc st :pos 0)
+      (or (plain :end) (ctrl :e))   (assoc st :pos n)
+      (or (alt :b) (ctrl :left))    (assoc st :pos (word-left buf pos))
+      (or (alt :f) (ctrl :right))   (assoc st :pos (word-right buf pos))
+      (ctrl :k)                     (kill st pos n)
+      (ctrl :u)                     (kill st 0 pos)
+      (ctrl :w)                     (kill st (word-left buf pos) pos)
+      (alt :d)                      (kill st pos (word-right buf pos))
+      (ctrl :y)                     (insert st @kill-ring)
+      (or (plain :up) (ctrl :p))    (history-move st -1)
+      (or (plain :down) (ctrl :n))  (history-move st 1)
+      (plain :tab)                  (complete st)
+      (ctrl :l)                     (do (out! csi "H" csi "2J") st)
+      :else                         st)))
+
+(defn read-line
+  "Edit one line after prompt. Returns the string, or nil on C-c."
+  [prompt]
+  (let [st0 {:prompt prompt :buf [] :pos 0 :hist nil :saved [] :last nil}]
+    (render! st0)
+    (loop [st st0]
+      (let [k  (beer.tty/read-key)
+            r  (handle st k)]
+        (cond
+          (:done r)   (do (render! (assoc st :final? true)) (out! "\r\n") (:done r))
+          (:cancel r) (do (out! "^C\r\n") nil)
+          :else       (let [r (assoc r :last (:key k))]
+                        (render! r)
+                        (recur r)))))))
+
+(defn remember! [s]
+  (let [line (beer.string/trim (beer.string/replace s "\n" " "))]
+    (when (and (not= line "") (not= line (last @history)))
+      (swap! history (fn [h] (let [h (conj h line)]
+                               (if (> (count h) history-max) (subvec h 1) h)))))))
+
+(defn read-form
+  "Read lines until they form a complete form; returns them joined with
+  newlines (and a trailing one), or \"\" if cancelled."
+  [prompt]
+  (loop [lines [] p prompt]
+    (let [line (read-line p)]
+      (if (nil? line)
+        ""
+        (let [lines (conj lines line)
+              text  (beer.string/join "\n" lines)]
+          (if (or (form-complete? text) (= (beer.string/trim text) ""))
+            (do (remember! text) (str text "\n"))
+            (recur lines continuation-prompt)))))))

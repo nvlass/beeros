@@ -66,6 +66,8 @@ beeros/
 │   ├── fs.beer        ← beer.fs: mount table, path ops, load-file; mounts / at boot
 │   ├── input.beer     ← beer.input: event queue, held keys, key->char
 │   ├── virtio_input.beer ← beer.virtio-input: keyboard/mouse/tablet driver
+│   ├── tty.beer       ← beer.tty: ttys (keystroke source + ANSI sink); serial tty
+│   ├── lineedit.beer  ← beer.lineedit: REPL line editor (history, completion)
 │   └── gfx.beer       ← beerlang drawing library
 ├── scripts/qemu-drive.py ← scripted REPL + monitor/QMP input for QEMU tests
 └── Makefile
@@ -220,6 +222,17 @@ spawns one polling task each (they run while the REPL waits on the UART).
 `scripts/qemu-drive.py` (monitor `sendkey`/`mouse_move`, QMP
 `input-send-event`); `-monitor unix:` paths in the scratchpad are too long
 for macOS, hence TCP.
+
+## Console (`beer.tty`, `beer.lineedit`)
+
+Design and keys: `docs/console.md`. The REPL reads every form through
+`(beer.lineedit/read-form beer.lineedit/prompt)` (compiled once in
+`repl_uart.c`); on an error it disables the editor
+(`beer.lineedit/enabled?` false) and uses its C reader, `(beer.lineedit/enable!)`
+re-enables. Editor forms skip the C bracket check (the editor knows `\(`
+char literals, the C check doesn't). The serial tty decodes VT100/xterm
+input and also accepts `beer.input` keyboards. `def` takes no docstring in
+beerlang: `(def x "doc" v)` silently binds the string.
 
 ## Graphics driver (`beer.gfx`)
 

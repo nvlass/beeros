@@ -12,6 +12,8 @@
 #include "fs_beer_blob.h"
 #include "input_beer_blob.h"
 #include "virtio_input_beer_blob.h"
+#include "tty_beer_blob.h"
+#include "lineedit_beer_blob.h"
 
 #define LOAD(sym, path) beer_load_blob(sym, sym##_len, path, NULL)
 
@@ -22,4 +24,6 @@ void beer_load_libraries(void) {
     LOAD(lib_fs_beer,           "lib/fs.beer");           /* mounts / */
     LOAD(lib_input_beer,        "lib/input.beer");
     LOAD(lib_virtio_input_beer, "lib/virtio_input.beer"); /* starts input tasks */
+    LOAD(lib_tty_beer,          "lib/tty.beer");
+    LOAD(lib_lineedit_beer,     "lib/lineedit.beer");     /* the REPL reads through it */
 }

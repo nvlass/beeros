@@ -1,0 +1,159 @@
+;; beer.tty — terminals: a keystroke source plus an ANSI/VT100 text sink
+;;
+;; A tty is a map {:name :read-key :write!}. :read-key returns the next
+;; keystroke, yielding while there is none:
+;;   {:char "a"}                      text (any UTF-8 character)
+;;   {:key :left :mods #{}}           editing/function keys, :enter :tab :backspace ...
+;;   {:key :a :mods #{:ctrl}}         control and alt chords
+;; :write! takes a string that may contain ANSI escape sequences. The
+;; serial tty reads the UART (VT100/xterm sequences) and, when
+;; use-keyboard? is on, beer.input key events; it writes to the UART. A
+;; framebuffer terminal emulator can provide the same map later.
+
+(ns beer.tty)
+
+(def esc (str (char 27)))
+(def csi (str esc "["))
+
+;; ── UART bytes ────────────────────────────────────────────────────────────
+
+(defn uart-byte []
+  (when (not= 0 (bit-and (beer.mem/read8 beer.mem/uart0-lsr) 1))
+    (beer.mem/read8 beer.mem/uart0-rbr)))
+
+(def escape-timeout-ns 50000000)   ; lone ESC vs. the start of a sequence
+
+(defn byte-within [timeout-ns]
+  (let [deadline (+ (nano-time) timeout-ns)]
+    (loop []
+      (let [b (uart-byte)]
+        (cond b b
+              (> (nano-time) deadline) nil
+              :else (do (yield) (recur)))))))
+
+;; ── VT100 / xterm decoding ────────────────────────────────────────────────
+
+(def no-mods #{})
+
+(defn ctrl-letter [b] (keyword (str (char (+ b 96)))))   ; 1 -> :a ... 26 -> :z
+
+(defn csi-mods
+  "xterm modifier parameter: 1 + (shift 1 | alt 2 | ctrl 4)."
+  [p]
+  (if (nil? p)
+    no-mods
+    (let [m (dec p)]
+      (into #{} (filter (fn [x] x)
+                        [(when (not= 0 (bit-and m 1)) :shift)
+                         (when (not= 0 (bit-and m 2)) :alt)
+                         (when (not= 0 (bit-and m 4)) :ctrl)])))))
+
+(def csi-final {65 :up 66 :down 67 :right 68 :left 72 :home 70 :end 90 :backtab})
+(def csi-tilde {1 :home 2 :insert 3 :delete 4 :end 5 :page-up 6 :page-down
+                7 :home 8 :end 15 :f5 17 :f6 18 :f7 19 :f8 20 :f9 21 :f10
+                23 :f11 24 :f12})
+(def ss3-final {65 :up 66 :down 67 :right 68 :left 72 :home 70 :end
+                80 :f1 81 :f2 82 :f3 83 :f4})
+
+(defn parse-int [s]
+  (let [r (try (read-string s) (catch e nil))]
+    (when (number? r) r)))
+
+(defn decode-csi
+  "After ESC [: parameters up to a final byte in 0x40-0x7E."
+  []
+  (loop [params ""]
+    (let [b (byte-within escape-timeout-ns)]
+      (cond
+        (nil? b) {:key :escape :mods no-mods}
+        (and (>= b 0x40) (<= b 0x7E))
+        (let [ps   (filter (fn [s] (not= s "")) (beer.string/split params ";"))
+              nums (vec (map parse-int ps))
+              p1   (first nums)
+              mods (csi-mods (when (> (count nums) 1) (nth nums 1)))]
+          (cond (= b 126) {:key (get csi-tilde p1 :unknown) :mods mods}
+                (= b 90)  {:key :tab :mods #{:shift}}
+                :else     {:key (get csi-final b :unknown) :mods mods}))
+        :else (recur (str params (char b)))))))
+
+(defn decode-escape []   ; calls decode (below): vars resolve at call time
+  (let [b (byte-within escape-timeout-ns)]
+    (cond
+      (nil? b) {:key :escape :mods no-mods}
+      (= b 91) (decode-csi)                                   ; ESC [
+      (= b 79) (let [f (byte-within escape-timeout-ns)]       ; ESC O
+                 {:key (get ss3-final f :unknown) :mods no-mods})
+      :else (let [k (decode b)]                               ; ESC x = alt-x
+              (if (:char k)
+                {:key (keyword (:char k)) :mods #{:alt}}
+                (assoc k :mods (conj (or (:mods k) no-mods) :alt)))))))
+
+(defn decode-utf8 [lead]
+  (let [n (cond (>= lead 0xF0) 3 (>= lead 0xE0) 2 (>= lead 0xC0) 1 :else 0)
+        buf (beer.bytes/alloc (inc n))]
+    (beer.bytes/u8! buf 0 lead)
+    (loop [i 1]
+      (if (> i n)
+        {:char (beer.bytes/->string-lossy buf)}
+        (let [b (byte-within escape-timeout-ns)]
+          (if b
+            (do (beer.bytes/u8! buf i b) (recur (inc i)))
+            {:char (beer.bytes/->string-lossy (beer.bytes/slice buf 0 i))}))))))
+
+(def last-byte (atom 0))
+
+(defn decode
+  "Keystroke for the byte b (reading more bytes for sequences), or nil to
+  ignore it."
+  [b]
+  (let [prev @last-byte]
+    (reset! last-byte b)
+    (cond
+      (= b 13)  {:key :enter :mods no-mods}
+      (= b 10)  (when (not= prev 13) {:key :enter :mods no-mods})   ; LF, but not CR LF
+      (= b 9)   {:key :tab :mods no-mods}
+      (or (= b 127) (= b 8)) {:key :backspace :mods no-mods}
+      (= b 27)  (decode-escape)
+      (= b 0)   nil
+      (< b 32)  {:key (ctrl-letter b) :mods #{:ctrl}}
+      (< b 128) {:char (str (char b))}
+      :else     (decode-utf8 b))))
+
+;; ── beer.input keyboards ──────────────────────────────────────────────────
+
+(defn event->keystroke [ev]
+  (when (and (= (:type ev) :key) (:down? ev))
+    (let [mods (or (:mods ev) no-mods)
+          c    (beer.input/key->char ev)]
+      (if (and c (empty? (disj mods :shift)) (not= c "\n") (not= c "\t"))
+        {:char c}
+        {:key (:key ev) :mods mods}))))
+
+;; Also take keystrokes from beer.input keyboards (e.g. the QEMU window).
+;; While a tty waits for a key it consumes all beer.input events.
+(def use-keyboard? (atom true))
+
+(defn keyboard-keystroke []
+  (when @use-keyboard?
+    (loop []
+      (let [ev (beer.input/poll-event)]
+        (when ev
+          (or (event->keystroke ev) (recur)))))))
+
+;; ── the serial tty ────────────────────────────────────────────────────────
+
+(defn serial-read-key []
+  (loop []
+    (let [b (uart-byte)
+          k (if b (decode b) (keyboard-keystroke))]
+      (if k k (do (yield) (recur))))))
+
+(def serial
+  {:name     "serial0"
+   :read-key serial-read-key
+   :write!   (fn [s] (print s))})
+
+(def current (atom serial))
+
+(defn read-key [] ((:read-key @current)))
+(defn write! [& xs] ((:write! @current) (apply str xs)))

@@ -140,7 +140,7 @@ kernel/%_beer_blob.h: lib/%.beer
 	xxd -i $< > $@
 
 # Pure-beerlang libraries loaded by kernel/beer_libs.c, in load order
-BEER_LIBS = virtio virtio_blk ext2 fs input virtio_input
+BEER_LIBS = virtio virtio_blk ext2 fs input virtio_input tty lineedit
 BEER_LIB_BLOBS = $(patsubst %,kernel/%_beer_blob.h,$(BEER_LIBS))
 
 # Fixed array name: xxd -i would derive it from the submodule path

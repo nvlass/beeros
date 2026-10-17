@@ -4,7 +4,9 @@ the monitor (sendkey, mouse_move, ...) and QMP (input-send-event, ...).
 usage: python3 scripts/qemu-drive.py script.txt log.txt -- qemu-system-riscv64 \
            -M virt -m 256M -display none -bios none -serial stdio \
            -global virtio-mmio.force-legacy=false -kernel beeros.elf [devices...]
-script lines: "r <beerlang>" (REPL), "m <monitor cmd>", "q <QMP json>", "s <seconds>"
+script lines: "r <beerlang>" (REPL line + CR), "k <bytes>" (raw serial bytes,
+Python escapes: \x1b[D is Left, \r is Enter), "m <monitor cmd>", "q <QMP json>",
+"s <seconds>"
 The serial console must be "-serial stdio" (not mon:stdio); the monitor and
 QMP go to localhost TCP ports 45454/45455.
 """
@@ -38,6 +40,10 @@ for line in open(script):
     kind, arg = line[0], line[2:]
     if kind == "r":
         p.stdin.write(arg.encode() + b"\r"); p.stdin.flush(); time.sleep(0.8)
+    elif kind == "k":
+        for ch in arg.encode().decode("unicode_escape").encode("latin-1"):
+            p.stdin.write(bytes([ch])); p.stdin.flush(); time.sleep(0.02)
+        time.sleep(0.6)
     elif kind == "m":
         mon.sendall(arg.encode() + b"\n"); time.sleep(0.15); drain()
     elif kind == "q":

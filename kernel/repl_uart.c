@@ -11,6 +11,7 @@
  */
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>   /* malloc/free from beerlang's allocator */
@@ -28,6 +29,7 @@
 #include "task.h"
 #include "function.h"
 #include "beerlang.h"
+#include "bstring.h"
 
 #include "mem_natives.h"
 #include "blk_natives.h"
@@ -131,6 +133,95 @@ static int uart_readline(char* buf, int max) {
 }
 
 /* ----------------------------------------------------------------
+ * lineedit_read — line input through beer.lineedit (lib/lineedit.beer)
+ *
+ * The call form is compiled once and re-run for every input; the prompt
+ * goes in through the var beer.lineedit/prompt. Returns the length read,
+ * or -1 to use uart_readline: the editor isn't loaded, is disabled, or
+ * just failed (then it is disabled so a broken edit can't lock the REPL).
+ * ---------------------------------------------------------------- */
+static CompiledCode* lineedit_code;
+static Value*        lineedit_consts;
+static int           lineedit_nconsts;
+
+static Namespace* lineedit_ns(void) {
+    return namespace_registry_get(global_namespace_registry, "beer.lineedit");
+}
+
+static bool lineedit_enabled(void) {
+    Namespace* ns = lineedit_ns();
+    if (!ns) return false;
+    Var* v = namespace_lookup(ns, symbol_intern("enabled?"));
+    if (!v) return false;
+    Value e = var_get_value(v);
+    return !is_nil(e) && !is_false(e);
+}
+
+static bool lineedit_compile(void) {
+    if (lineedit_code) return true;
+    Reader* r = reader_new("(beer.lineedit/read-form beer.lineedit/prompt)", "<lineedit>");
+    if (!r) return false;
+    Value form = reader_read(r);
+    bool bad = reader_has_error(r);
+    reader_free(r);
+    if (bad) return false;
+    Compiler* c = compiler_new("<lineedit>");
+    CompiledCode* code = compile(c, form);
+    bad = compiler_has_error(c);
+    compiler_free(c);
+    if (is_pointer(form)) object_release(form);
+    if (bad) { compiled_code_free(code); return false; }
+    lineedit_nconsts = (int)vector_length(code->constants);
+    lineedit_consts = malloc((size_t)(lineedit_nconsts ? lineedit_nconsts : 1) * sizeof(Value));
+    for (int i = 0; i < lineedit_nconsts; i++) {
+        lineedit_consts[i] = vector_get(code->constants, i);
+        if (is_pointer(lineedit_consts[i])) object_make_immortal(lineedit_consts[i]);
+    }
+    lineedit_code = code;
+    return true;
+}
+
+static void lineedit_disable(const char* why) {
+    uart_puts("\r\n[beeros] line editor failed: ");
+    uart_puts(why);
+    uart_puts("\r\n[beeros] using the built-in reader; (beer.lineedit/enable!) to retry\r\n");
+    Namespace* ns = lineedit_ns();
+    if (ns) namespace_define(ns, symbol_intern("enabled?"), VALUE_FALSE);
+}
+
+static int lineedit_read(const char* prompt, char* buf, int max) {
+    if (!lineedit_enabled()) return -1;
+    if (!lineedit_compile()) { lineedit_disable("cannot compile the call"); return -1; }
+
+    Value p = string_from_cstr(prompt);
+    namespace_define(lineedit_ns(), symbol_intern("prompt"), p);
+    object_release(p);
+
+    Value tv = task_new_from_code(lineedit_code->bytecode, (int)lineedit_code->code_size,
+                                  lineedit_consts, lineedit_nconsts, global_scheduler);
+    Task* t = task_get(tv);
+    scheduler_run_task_to_completion(global_scheduler, t);
+
+    int n = -1;
+    if (t->vm->error) {
+        lineedit_disable(t->vm->error_msg);
+    } else if (!is_string(t->result)) {
+        lineedit_disable("read-form did not return a string");
+    } else {
+        size_t len = string_byte_length(t->result);
+        if (len >= (size_t)max) {
+            uart_puts("Error: input too long\r\n");
+            len = 0;
+        }
+        memcpy(buf, string_cstr(t->result), len);
+        buf[len] = '\0';
+        n = (int)len;
+    }
+    object_release(tv);
+    return n;
+}
+
+/* ----------------------------------------------------------------
  * run_repl — the interactive REPL loop
  * ---------------------------------------------------------------- */
 static void run_repl(void) {
@@ -148,18 +239,22 @@ static void run_repl(void) {
     int line_number = 1;
 
     while (true) {
-        /* Print prompt */
+        /* Prompt: the line editor draws it itself */
         Namespace* cur_ns = namespace_registry_current(global_namespace_registry);
+        char prompt[128];
         if (accum_len == 0) {
-            uart_puts(cur_ns ? cur_ns->name : "beer");
-            uart_putc(':');
-            uart_print_int(line_number);
-            uart_puts("> ");
+            snprintf(prompt, sizeof prompt, "%s:%d> ", cur_ns ? cur_ns->name : "beer", line_number);
         } else {
-            uart_puts("...   ");
+            strcpy(prompt, "...   ");
         }
 
-        int n = uart_readline(input, INPUT_SIZE);
+        /* The editor returns whole forms, so only use it at the start of one */
+        int n = accum_len == 0 ? lineedit_read(prompt, input, INPUT_SIZE) : -1;
+        bool whole_form = n > 0;   /* the editor already checked it (and knows \( etc.) */
+        if (n < 0) {
+            uart_puts(prompt);
+            n = uart_readline(input, INPUT_SIZE);
+        }
         if (n == 0) continue;
 
         /* Exit check */
@@ -185,7 +280,7 @@ static void run_repl(void) {
         accum_len += input_len;
         accum[accum_len] = '\0';
 
-        if (!is_form_complete(accum)) continue;
+        if (!whole_form && !is_form_complete(accum)) continue;
 
         /* Parse */
         Reader* reader = reader_new(accum, "<repl>");

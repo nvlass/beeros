@@ -90,7 +90,8 @@ KERNEL_SRCS = \
 	kernel/blob_loader.c \
 	kernel/mem_natives.c \
 	kernel/virtio_blk.c \
-	kernel/blk_natives.c
+	kernel/blk_natives.c \
+	kernel/beer_libs.c
 
 ifdef BEEROS_GFX
 KERNEL_SRCS   += kernel/gfx.c kernel/gfx_natives.c
@@ -127,29 +128,20 @@ LDFLAGS = \
 	-lgcc
 
 # ── build rules ────────────────────────────────────────────────────────
-BUILD_DIR = build/$(BOARD)
+# Separate objects per flag set: -DBEEROS_GFX changes repl_uart.o
+BUILD_DIR = build/$(BOARD)$(if $(BEEROS_GFX),-gfx)
 
 OBJS = $(patsubst %.c,$(BUILD_DIR)/%.o,$(filter %.c,$(ALL_SRCS))) \
        $(patsubst %.S,$(BUILD_DIR)/%.o,$(filter %.S,$(ALL_SRCS)))
 
 # ── blob headers for embedded .beer libs ──────────────────────────────────
-kernel/gfx_beer_blob.h: lib/gfx.beer
+# lib/foo.beer → kernel/foo_beer_blob.h (array lib_foo_beer)
+kernel/%_beer_blob.h: lib/%.beer
 	xxd -i $< > $@
 
-kernel/mem_beer_blob.h: lib/mem.beer
-	xxd -i $< > $@
-
-kernel/blk_beer_blob.h: lib/blk.beer
-	xxd -i $< > $@
-
-kernel/virtio_blk_beer_blob.h: lib/virtio_blk.beer
-	xxd -i $< > $@
-
-kernel/ext2_beer_blob.h: lib/ext2.beer
-	xxd -i $< > $@
-
-kernel/fs_beer_blob.h: lib/fs.beer
-	xxd -i $< > $@
+# Pure-beerlang libraries loaded by kernel/beer_libs.c, in load order
+BEER_LIBS = virtio virtio_blk ext2 fs input virtio_input
+BEER_LIB_BLOBS = $(patsubst %,kernel/%_beer_blob.h,$(BEER_LIBS))
 
 # Fixed array name: xxd -i would derive it from the submodule path
 kernel/core_beer_blob.h: $(BEER_ROOT)/lib/core.beer
@@ -162,6 +154,8 @@ all: _check_picolibc beeros.bin
 
 # DISK=path/to/image.img attaches a raw image as a virtio-blk device
 DISK_FLAGS = $(if $(DISK),-drive file=$(DISK),if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0)
+# Keyboard + mouse for the display window (virtio-input)
+INPUT_FLAGS = -device virtio-keyboard-device -device virtio-mouse-device
 
 run: _check_picolibc beeros.elf
 	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -kernel beeros.elf
@@ -173,7 +167,7 @@ run-gfx: _check_picolibc kernel/gfx_beer_blob.h
 	$(MAKE) BOARD=$(BOARD) BEEROS_GFX=1
 	$(QEMU) -M virt -m 256M -bios none \
 	  -device ramfb -display $(DISPLAY_BACKEND) \
-	  -serial stdio -global virtio-mmio.force-legacy=false $(DISK_FLAGS) \
+	  -serial stdio -global virtio-mmio.force-legacy=false $(DISK_FLAGS) $(INPUT_FLAGS) \
 	  -kernel beeros.elf
 
 beeros.elf: $(BEER_ROOT)/include/beerlang.h $(OBJS)
@@ -189,7 +183,8 @@ disasm: beeros.elf
 $(BUILD_DIR)/kernel/gfx_natives.o: kernel/gfx_beer_blob.h
 $(BUILD_DIR)/kernel/mem_natives.o: kernel/mem_beer_blob.h
 $(BUILD_DIR)/kernel/repl_uart.o: kernel/core_beer_blob.h
-$(BUILD_DIR)/kernel/blk_natives.o: kernel/blk_beer_blob.h kernel/virtio_blk_beer_blob.h kernel/ext2_beer_blob.h kernel/fs_beer_blob.h
+$(BUILD_DIR)/kernel/blk_natives.o: kernel/blk_beer_blob.h
+$(BUILD_DIR)/kernel/beer_libs.o: $(BEER_LIB_BLOBS)
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -200,4 +195,4 @@ $(BUILD_DIR)/%.o: %.S
 	$(AS) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf build/ beeros.elf beeros.bin kernel/gfx_beer_blob.h kernel/mem_beer_blob.h kernel/core_beer_blob.h kernel/blk_beer_blob.h kernel/virtio_blk_beer_blob.h kernel/ext2_beer_blob.h kernel/fs_beer_blob.h
+	rm -rf build/ beeros.elf beeros.bin kernel/*_beer_blob.h

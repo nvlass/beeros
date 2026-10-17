@@ -1,0 +1,185 @@
+;; beer.virtio — virtio 1.x over virtio-mmio, shared by the beerlang drivers
+;;
+;; Probing, feature negotiation and split virtqueues. Drivers (virtio-blk,
+;; virtio-input, ...) build on this and keep only their device logic.
+
+(ns beer.virtio)
+
+;; ── transport: QEMU virt (riscv) has 8 virtio-mmio slots ──────────────────
+
+(def mmio-base   0x10001000)
+(def mmio-stride 0x1000)
+(def mmio-slots  8)
+
+;; ── virtio-mmio registers (virtio 1.x §4.2.2) ─────────────────────────────
+
+(def r-magic            0x000)
+(def r-version          0x004)
+(def r-device-id        0x008)
+(def r-dev-features     0x010)
+(def r-dev-features-sel 0x014)
+(def r-drv-features     0x020)
+(def r-drv-features-sel 0x024)
+(def r-queue-sel        0x030)
+(def r-queue-num-max    0x034)
+(def r-queue-num        0x038)
+(def r-queue-ready      0x044)
+(def r-queue-notify     0x050)
+(def r-int-status       0x060)
+(def r-int-ack          0x064)
+(def r-status           0x070)
+(def r-queue-desc       0x080)   ; lo at +0, hi at +4
+(def r-queue-avail      0x090)
+(def r-queue-used       0x0a0)
+(def r-config-gen       0x0fc)
+(def r-config           0x100)   ; device-specific config space
+
+(def virtio-magic 0x74726976)    ; "virt"
+
+(def st-acknowledge 1)
+(def st-driver      2)
+(def st-driver-ok   4)
+(def st-features-ok 8)
+(def st-failed      128)
+
+(def f-version-1 1)              ; feature bit 32 = bit 0 of word 1
+
+(def desc-next  1)
+(def desc-write 2)               ; the device writes this buffer
+
+(defn rd [base off] (beer.mem/read32 (+ base off)))
+(defn wr! [base off v] (beer.mem/write32! (+ base off) v))
+(defn wr-addr! [base off addr]
+  (wr! base off (bit-and addr 0xFFFFFFFF))
+  (wr! base (+ off 4) (bit-shift-right addr 32)))
+
+(defn cfg8  [base off] (beer.mem/read8 (+ base r-config off)))
+(defn cfg8! [base off v] (beer.mem/write8! (+ base r-config off) v))
+(defn cfg32 [base off] (rd base (+ r-config off)))
+
+;; ── probing and setup ─────────────────────────────────────────────────────
+
+(defn probe
+  "Base addresses of the virtio-mmio slots holding a modern device of
+  device-id (2 = block, 18 = input, 1 = net), in slot order."
+  [device-id]
+  (filter (fn [base]
+            (and (= (rd base r-magic) virtio-magic)
+                 (= (rd base r-device-id) device-id)
+                 (= (rd base r-version) 2)))
+          (map (fn [slot] (+ mmio-base (* slot mmio-stride)))
+               (range mmio-slots))))
+
+(defn init-failed! [base reason]
+  (wr! base r-status (bit-or (rd base r-status) st-failed))
+  (throw (ex-info (str "virtio init failed: " (name reason))
+                  {:base base :reason reason})))
+
+(defn device-features [base sel]
+  (wr! base r-dev-features-sel sel)
+  (rd base r-dev-features))
+
+(defn negotiate!
+  "Reset the device and accept VERSION_1 plus the bits of want0 (feature
+  word 0) it offers. Returns the accepted word-0 bits."
+  [base want0]
+  (wr! base r-status 0)
+  (wr! base r-status (bit-or st-acknowledge st-driver))
+  (when (= 0 (bit-and (device-features base 1) f-version-1))
+    (init-failed! base :no-version-1))
+  (let [got0 (bit-and (device-features base 0) want0)]
+    (wr! base r-drv-features-sel 0)
+    (wr! base r-drv-features got0)
+    (wr! base r-drv-features-sel 1)
+    (wr! base r-drv-features f-version-1)
+    (wr! base r-status (bit-or (bit-or st-acknowledge st-driver) st-features-ok))
+    (when (= 0 (bit-and (rd base r-status) st-features-ok))
+      (init-failed! base :features-rejected))
+    got0))
+
+(defn driver-ok! [base]
+  (wr! base r-status (bit-or (rd base r-status) st-driver-ok)))
+
+;; ── memory ────────────────────────────────────────────────────────────────
+
+(defn alloc-aligned
+  "[buf off]: a ByteBuffer with n usable bytes starting at byte off, which
+  sits on an align boundary (align a power of two). ByteBuffer has no
+  aligned constructor yet, so over-allocate and round the address up."
+  [n align]
+  (let [buf  (beer.bytes/alloc (+ n align))
+        mask (dec align)
+        off  (bit-and (- align (bit-and (beer.bytes/addr buf) mask)) mask)]
+    [buf off]))
+
+(defn align-up [n a] (* a (quot (+ n (dec a)) a)))
+
+;; ── split virtqueues ──────────────────────────────────────────────────────
+;; One ByteBuffer per queue: descriptor table, avail ring, used ring, then
+;; `extra` bytes the driver uses for request headers / event buffers.
+;; Offsets in the queue map are from the 16-byte-aligned start.
+
+(defn layout [qsize]
+  (let [avail (* 16 qsize)                                ; desc: addr u64, len u32, flags u16, next u16
+        used  (align-up (+ avail 6 (* 2 qsize)) 4)        ; flags, idx, ring[qsize] u16, used_event
+        extra (align-up (+ used 6 (* 8 qsize)) 16)]       ; flags, idx, ring[qsize] {id u32, len u32}, avail_event
+    {:desc 0 :avail avail :used used :extra extra}))
+
+(defn q-u16  [q o] (beer.bytes/u16le (:ring q) (+ (:ro q) o)))
+(defn q-u16! [q o v] (beer.bytes/u16le! (:ring q) (+ (:ro q) o) v))
+(defn q-u32  [q o] (beer.bytes/u32le (:ring q) (+ (:ro q) o)))
+(defn q-addr [q o] (+ (beer.bytes/addr (:ring q)) (:ro q) o))
+(defn extra-addr [q o] (q-addr q (+ (:extra q) o)))
+(defn extra-off  [q o] (+ (:ro q) (:extra q) o))     ; byte offset in (:ring q)
+
+(defn setup-queue!
+  "Configure queue qidx with qsize entries and `extra` bytes of driver
+  memory after the rings. Call between negotiate! and driver-ok!."
+  [base qidx qsize extra]
+  (wr! base r-queue-sel qidx)
+  (when (< (rd base r-queue-num-max) qsize) (init-failed! base :queue-too-small))
+  (let [l (layout qsize)
+        [ring ro] (alloc-aligned (+ (:extra l) extra) 16)
+        q (merge l {:base base :index qidx :size qsize :ring ring :ro ro
+                    :used-seen (atom 0)})]
+    (wr! base r-queue-num qsize)
+    (wr-addr! base r-queue-desc  (q-addr q (:desc l)))
+    (wr-addr! base r-queue-avail (q-addr q (:avail l)))
+    (wr-addr! base r-queue-used  (q-addr q (:used l)))
+    (wr! base r-queue-ready 1)
+    q))
+
+(defn set-desc! [q i addr len flags next]
+  (let [b (:ring q)
+        o (+ (:ro q) (:desc q) (* i 16))]
+    (beer.bytes/u64le! b o addr)
+    (beer.bytes/u32le! b (+ o 8) len)
+    (beer.bytes/u16le! b (+ o 12) flags)
+    (beer.bytes/u16le! b (+ o 14) next)))
+
+(defn publish!
+  "Offer the descriptor chains starting at heads to the device and notify it."
+  [q heads]
+  (let [av (:avail q)]
+    (loop [hs heads idx (q-u16 q (+ av 2))]
+      (if (empty? hs)
+        (do
+          (beer.mem/fence)                       ; ring entries before the index
+          (q-u16! q (+ av 2) idx)
+          (beer.mem/fence)                       ; index before the notify
+          (wr! (:base q) r-queue-notify (:index q)))
+        (do
+          (q-u16! q (+ av 4 (* 2 (bit-and idx (dec (:size q))))) (first hs))
+          (recur (rest hs) (bit-and (inc idx) 0xffff)))))))
+
+(defn take-used!
+  "Next completed chain as {:id head :len bytes-written}, or nil."
+  [q]
+  (let [seen @(:used-seen q)
+        u    (:used q)]
+    (when (not= (q-u16 q (+ u 2)) seen)
+      (beer.mem/fence)                           ; used index before the entry and data
+      (let [o (+ u 4 (* 8 (bit-and seen (dec (:size q)))))]
+        (reset! (:used-seen q) (bit-and (inc seen) 0xffff))
+        (wr! (:base q) r-int-ack (rd (:base q) r-int-status))
+        {:id (q-u32 q o) :len (q-u32 q (+ o 4))}))))

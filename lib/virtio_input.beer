@@ -1,0 +1,198 @@
+;; beer.virtio-input — virtio-input driver (keyboard, mouse, tablet)
+;;
+;; The device sends Linux evdev events ({type u16, code u16, value u32})
+;; into buffers we keep posted on its event queue. A task per device polls
+;; the queue, turns evdev into beer.input events, and re-posts the buffers.
+;; Physical keys come from Linux keycodes (see key-names) — remap there.
+
+(ns beer.virtio-input)
+
+(def device-input 18)
+(def qsize        16)
+(def ev-size      8)
+
+;; config space (virtio 1.x §5.8.4): select u8, subsel u8, size u8, pad, union at 8
+(def cfg-select 0)
+(def cfg-subsel 1)
+(def cfg-size   2)
+(def cfg-union  8)
+(def sel-id-name  0x01)
+(def sel-ev-bits  0x11)
+(def sel-abs-info 0x12)
+
+(def ev-syn 0)
+(def ev-key 1)
+(def ev-rel 2)
+(def ev-abs 3)
+
+(def rel-x     0)
+(def rel-y     1)
+(def rel-wheel 8)
+(def abs-x     0)
+(def abs-y     1)
+
+;; ── config space ──────────────────────────────────────────────────────────
+
+(defn cfg-query
+  "Select (sel, subsel) and return the size of the answer."
+  [base sel sub]
+  (beer.virtio/cfg8! base cfg-select sel)
+  (beer.virtio/cfg8! base cfg-subsel sub)
+  (beer.virtio/cfg8 base cfg-size))
+
+(defn cfg-string [base sel sub]
+  (let [n   (cfg-query base sel sub)
+        buf (beer.bytes/alloc (max n 1))]
+    (doseq [i (range n)]
+      (beer.bytes/u8! buf i (beer.virtio/cfg8 base (+ cfg-union i))))
+    (beer.bytes/->string-lossy (beer.bytes/slice buf 0 n))))
+
+(defn supports? [base ev-type] (> (cfg-query base sel-ev-bits ev-type) 0))
+
+(defn abs-max [base axis]
+  (if (> (cfg-query base sel-abs-info axis) 0)
+    (beer.virtio/cfg32 base (+ cfg-union 4))      ; {min, max, fuzz, flat, res}
+    32767))
+
+;; ── Linux keycodes → key keywords ─────────────────────────────────────────
+
+(def key-names
+  (let [k keyword]
+    {1 :escape 2 (k "1") 3 (k "2") 4 (k "3") 5 (k "4") 6 (k "5") 7 (k "6")
+     8 (k "7") 9 (k "8") 10 (k "9") 11 (k "0") 12 :minus 13 :equal
+     14 :backspace 15 :tab
+     16 :q 17 :w 18 :e 19 :r 20 :t 21 :y 22 :u 23 :i 24 :o 25 :p
+     26 :left-bracket 27 :right-bracket 28 :enter 29 :left-ctrl
+     30 :a 31 :s 32 :d 33 :f 34 :g 35 :h 36 :j 37 :k 38 :l
+     39 :semicolon 40 :apostrophe 41 :grave 42 :left-shift 43 :backslash
+     44 :z 45 :x 46 :c 47 :v 48 :b 49 :n 50 :m
+     51 :comma 52 :dot 53 :slash 54 :right-shift 55 :kp-multiply
+     56 :left-alt 57 :space 58 :caps-lock
+     59 :f1 60 :f2 61 :f3 62 :f4 63 :f5 64 :f6 65 :f7 66 :f8 67 :f9 68 :f10
+     69 :num-lock 70 :scroll-lock
+     71 :kp7 72 :kp8 73 :kp9 74 :kp-minus 75 :kp4 76 :kp5 77 :kp6 78 :kp-plus
+     79 :kp1 80 :kp2 81 :kp3 82 :kp0 83 :kp-dot
+     87 :f11 88 :f12 96 :kp-enter 97 :right-ctrl 98 :kp-divide 100 :right-alt
+     102 :home 103 :up 104 :page-up 105 :left 106 :right 107 :end
+     108 :down 109 :page-down 110 :insert 111 :delete
+     125 :left-meta 126 :right-meta 127 :menu}))
+
+(def button-names {0x110 :left 0x111 :right 0x112 :middle 0x113 :side 0x114 :extra})
+
+;; ── device setup ──────────────────────────────────────────────────────────
+
+(defn post-all!
+  "Point descriptor i at event slot i (device-writable) and offer them all."
+  [q]
+  (doseq [i (range qsize)]
+    (beer.virtio/set-desc! q i (beer.virtio/extra-addr q (* i ev-size)) ev-size
+                           beer.virtio/desc-write 0))
+  (beer.virtio/publish! q (range qsize)))
+
+(defn init [base]
+  (beer.virtio/negotiate! base 0)
+  (let [kind (cond (supports? base ev-abs) :tablet      ; tablets also report a rel wheel
+                   (supports? base ev-rel) :mouse
+                   :else                   :keyboard)
+        info {:base     base
+              :kind     kind
+              :product  (cfg-string base sel-id-name 0)
+              :abs-max  (when (= kind :tablet) [(abs-max base abs-x) (abs-max base abs-y)])}
+        q    (beer.virtio/setup-queue! base 0 qsize (* qsize ev-size))]
+    (beer.virtio/driver-ok! base)
+    (post-all! q)
+    (assoc info
+           :q       q
+           :pending (atom {:dx 0 :dy 0 :x 0 :y 0 :abs? false}))))
+
+;; ── evdev → beer.input ────────────────────────────────────────────────────
+
+(defn signed32 [v] (if (> v 0x7FFFFFFF) (- v 0x100000000) v))
+
+(defn on-sync!
+  "End of one report: emit the motion / position it accumulated."
+  [d]
+  (let [p  @(:pending d)
+        nm (:name d)]
+    (when (or (not= 0 (:dx p)) (not= 0 (:dy p)))
+      (beer.input/emit! {:dev nm :type :motion :dx (:dx p) :dy (:dy p)}))
+    (when (:abs? p)
+      (let [[mx my] (:abs-max d)]
+        (beer.input/emit! {:dev nm :type :abs
+                           :x (/ (* 1.0 (:x p)) mx)
+                           :y (/ (* 1.0 (:y p)) my)})))
+    (reset! (:pending d) (assoc p :dx 0 :dy 0 :abs? false))))
+
+(defn pending! [d k f] (swap! (:pending d) (fn [p] (assoc (f p) :abs? (or (:abs? p) (= k :abs))))))
+
+(defn on-event! [d type code value]
+  (let [nm (:name d)]
+    (cond
+      (= type ev-syn) (on-sync! d)
+      (= type ev-key)
+      (let [b (get button-names code)]
+        (if b
+          (beer.input/emit! {:dev nm :type :button :button b :down? (not= value 0)})
+          (let [k (get key-names code)]
+            (beer.input/emit! (merge {:dev nm :type :key :key (or k :unknown)
+                                      :down? (not= value 0) :repeat? (= value 2)}
+                                     (when (nil? k) {:code code}))))))
+      (= type ev-rel)
+      (let [v (signed32 value)]
+        (cond (= code rel-x) (pending! d :rel (fn [p] (assoc p :dx (+ (:dx p) v))))
+              (= code rel-y) (pending! d :rel (fn [p] (assoc p :dy (+ (:dy p) v))))
+              (= code rel-wheel) (beer.input/emit! {:dev nm :type :wheel :delta v})))
+      (= type ev-abs)
+      (cond (= code abs-x) (pending! d :abs (fn [p] (assoc p :x value)))
+            (= code abs-y) (pending! d :abs (fn [p] (assoc p :y value)))))))
+
+(defn poll!
+  "Handle every event the device has delivered; re-post their buffers.
+  Returns how many events were handled."
+  [d]
+  (let [q (:q d)
+        b (:ring q)]
+    (loop [n 0 done []]
+      (let [u (beer.virtio/take-used! q)]
+        (if u
+          (let [o (beer.virtio/extra-off q (* (:id u) ev-size))]
+            (on-event! d (beer.bytes/u16le b o) (beer.bytes/u16le b (+ o 2))
+                       (beer.bytes/u32le b (+ o 4)))
+            (recur (inc n) (conj done (:id u))))
+          (do (when (not (empty? done)) (beer.virtio/publish! q done))
+              n))))))
+
+;; ── attach ────────────────────────────────────────────────────────────────
+
+;; Each attach! starts a new generation; older polling tasks see it and exit.
+(def generation (atom 0))
+
+(defn run-loop [d gen]
+  (loop []
+    (when (= @generation gen)
+      (poll! d)
+      (yield)
+      (recur))))
+
+(defn stop! []
+  (swap! generation inc)
+  nil)
+
+(defn attach!
+  "Initialise every virtio-input device, register it with beer.input as
+  kbd0 / mouse0 / tablet0 ..., and start one polling task per device."
+  []
+  (let [gen (swap! generation inc)]
+    (loop [bases (beer.virtio/probe device-input) counts {}]
+      (when (not (empty? bases))
+        (let [info (init (first bases))
+              kind (:kind info)
+              i    (get counts kind 0)
+              nm   (str (get {:keyboard "kbd" :mouse "mouse" :tablet "tablet"} kind) i)
+              d    (assoc info :name nm)]
+          (beer.input/register-device! (dissoc d :q :pending))
+          (spawn run-loop d gen)
+          (recur (rest bases) (assoc counts kind (inc i)))))))
+  (keys (beer.input/devices)))
+
+(attach!)

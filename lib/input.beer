@@ -1,0 +1,93 @@
+;; beer.input — input events from every backend (see docs/input.md)
+;;
+;; Backends (virtio-input, UART keyboard, USB HID) call emit!; consumers
+;; use poll-event / wait-event / down?. Events are plain maps:
+;;   {:dev "kbd0" :type :key :key :a :down? true :repeat? false :mods #{:shift}}
+;;   {:dev "mouse0" :type :button :button :left :down? true}
+;;   {:dev "mouse0" :type :motion :dx 3 :dy -1}
+;;   {:dev "mouse0" :type :wheel :delta -1}
+;;   {:dev "tablet0" :type :abs :x 0.25 :y 0.5}
+
+(ns beer.input)
+
+(def queue-max 256)
+
+(def queue    (atom []))     ; oldest first; oldest dropped when full
+(def held     (atom #{}))    ; keys and buttons currently down
+(def registry (atom {}))     ; device name -> info map from its backend
+
+(defn register-device! [info]
+  (swap! registry assoc (:name info) info)
+  info)
+
+(defn devices [] @registry)
+
+(def modifier-keys
+  {:left-shift :shift :right-shift :shift :left-ctrl :ctrl :right-ctrl :ctrl
+   :left-alt :alt :right-alt :alt :left-meta :meta :right-meta :meta})
+
+(defn mods
+  "Modifiers held right now, as a set of :shift :ctrl :alt :meta."
+  []
+  (into #{} (filter (fn [m] m) (map (fn [k] (get modifier-keys k)) @held))))
+
+(defn emit!
+  "Queue ev. Key events get :mods, the modifiers held when the key moved,
+  so consumers that read the queue later still see the right shift state."
+  [ev]
+  (let [t  (:type ev)
+        ev (if (= t :key) (assoc ev :mods (mods)) ev)]
+    (when (or (= t :key) (= t :button))
+      (let [k (if (= t :key) (:key ev) (:button ev))]
+        (swap! held (fn [h] (if (:down? ev) (conj h k) (disj h k))))))
+    (swap! queue (fn [q]
+                   (let [q (conj q ev)]
+                     (if (> (count q) queue-max) (subvec q 1) q)))))
+  nil)
+
+(defn poll-event
+  "Next event, or nil if none is waiting. Never blocks."
+  []
+  (loop []
+    (let [q @queue]
+      (cond (empty? q) nil
+            (compare-and-set! queue q (subvec q 1)) (first q)
+            :else (recur)))))
+
+(defn wait-event
+  "Next event; yields to other tasks (the drivers) until one arrives."
+  []
+  (loop []
+    (let [ev (poll-event)]
+      (if ev ev (do (yield) (recur))))))
+
+(defn clear! [] (reset! queue []) nil)
+
+(defn down? [k] (contains? @held k))
+
+;; ── characters (US layout) ────────────────────────────────────────────────
+
+(def us-layout
+  {:a ["a" "A"] :b ["b" "B"] :c ["c" "C"] :d ["d" "D"] :e ["e" "E"] :f ["f" "F"]
+   :g ["g" "G"] :h ["h" "H"] :i ["i" "I"] :j ["j" "J"] :k ["k" "K"] :l ["l" "L"]
+   :m ["m" "M"] :n ["n" "N"] :o ["o" "O"] :p ["p" "P"] :q ["q" "Q"] :r ["r" "R"]
+   :s ["s" "S"] :t ["t" "T"] :u ["u" "U"] :v ["v" "V"] :w ["w" "W"] :x ["x" "X"]
+   :y ["y" "Y"] :z ["z" "Z"]
+   (keyword "1") ["1" "!"] (keyword "2") ["2" "@"] (keyword "3") ["3" "#"]
+   (keyword "4") ["4" "$"] (keyword "5") ["5" "%"] (keyword "6") ["6" "^"]
+   (keyword "7") ["7" "&"] (keyword "8") ["8" "*"] (keyword "9") ["9" "("]
+   (keyword "0") ["0" ")"]
+   :minus ["-" "_"] :equal ["=" "+"] :left-bracket ["[" "{"] :right-bracket ["]" "}"]
+   :semicolon [";" ":"] :apostrophe ["'" "\""] :grave ["`" "~"] :backslash ["\\" "|"]
+   :comma ["," "<"] :dot ["." ">"] :slash ["/" "?"]
+   :space [" " " "] :tab ["\t" "\t"] :enter ["\n" "\n"]})
+
+(def layout us-layout)
+
+(defn key->char
+  "The one-character string a key-down event types, or nil (key-ups,
+  modifiers, arrows, ...). Uses the event's :mods and `layout`."
+  [ev]
+  (when (and (= (:type ev) :key) (:down? ev))
+    (let [pair (get layout (:key ev))]
+      (when pair (nth pair (if (contains? (:mods ev) :shift) 1 0))))))

@@ -55,16 +55,25 @@ beeros/
 │   ├── blob_loader.h / .c    ← shared read→compile→run loader for embedded .beer libs
 │   ├── virtio_blk.h / .c     ← C virtio-blk driver (virtio-mmio, modern transport)
 │   ├── blk_natives.h / .c    ← beer.blk.native namespace + lib/blk.beer loader
+│   ├── beer_libs.h / .c      ← loads the pure-beerlang libs (BEER_LIBS in the Makefile)
 │   └── repl_uart.c            ← REPL entry; boots core.beer, mem, blk, then optional gfx
 ├── lib/
 │   ├── mem.beer       ← MMIO helpers + named MMIO constants
 │   ├── blk.beer       ← beer.blk: block-device maps, registry, error policy
+│   ├── virtio.beer    ← beer.virtio: virtio-mmio transport + split virtqueues
 │   ├── virtio_blk.beer ← beer.virtio-blk: virtio-blk driver in beerlang (boot default)
 │   ├── ext2.beer      ← beer.ext2: read-only ext2 over a block-device map
 │   ├── fs.beer        ← beer.fs: mount table, path ops, load-file; mounts / at boot
+│   ├── input.beer     ← beer.input: event queue, held keys, key->char
+│   ├── virtio_input.beer ← beer.virtio-input: keyboard/mouse/tablet driver
 │   └── gfx.beer       ← beerlang drawing library
+├── scripts/qemu-drive.py ← scripted REPL + monitor/QMP input for QEMU tests
 └── Makefile
 ```
+
+Embedded libraries: `lib/foo.beer` becomes `kernel/foo_beer_blob.h` (array
+`lib_foo_beer`) by a pattern rule. Pure-beerlang libs go in `BEER_LIBS`
+(Makefile) and `kernel/beer_libs.c`, in load order.
 
 ## Board HAL contract
 
@@ -180,8 +189,8 @@ geometry; filesystems only ever see the map. Always built (no flag).
 - `lib/blk.beer` — wraps them into device maps (throwing `ex-info`),
   registry (`devices`, `device`, `register-device!`), `read-sectors`,
   `write-sectors!`, `flush!`, `use-native-driver!`.
-- `lib/virtio_blk.beer` — the same driver in beerlang on `beer.mem` +
-  `beer.bytes`; the **boot default** (`boot-driver` at the end of the file).
+- `lib/virtio_blk.beer` — the same driver in beerlang on `beer.virtio`
+  (`lib/virtio.beer`, shared with virtio-input) + `beer.bytes`; the **boot default** (`boot-driver` at the end of the file).
   `(beer.virtio-blk/attach!)` / `(beer.blk/use-native-driver!)` switch at
   the REPL; one driver owns a device at a time.
 
@@ -199,6 +208,18 @@ images are rejected, not misread). Build images with e2fsprogs
 (`brew install e2fsprogs`, keg-only in `/opt/homebrew/opt/e2fsprogs/sbin`):
 `mke2fs -t ext2 -d rootdir/ disk.img 8M`. QEMU needs `-m 256M` (from
 `board.mk`) when invoked by hand.
+
+## Input (`beer.input`)
+
+Interface and backends: `docs/input.md` (networking plans: `docs/network.md`).
+Backends call `beer.input/emit!`; consumers use `poll-event` (non-blocking),
+`wait-event` (yields), `down?`, `key->char`. `lib/virtio_input.beer` probes
+virtio-input devices at boot, names them `kbd0`/`mouse0`/`tablet0`, and
+spawns one polling task each (they run while the REPL waits on the UART).
+`make run-gfx` attaches a virtio keyboard + mouse. For headless tests use
+`scripts/qemu-drive.py` (monitor `sendkey`/`mouse_move`, QMP
+`input-send-event`); `-monitor unix:` paths in the scratchpad are too long
+for macOS, hence TCP.
 
 ## Graphics driver (`beer.gfx`)
 

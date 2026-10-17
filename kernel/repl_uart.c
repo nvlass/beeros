@@ -32,6 +32,7 @@
 #include "mem_natives.h"
 #include "blk_natives.h"
 #include "blob_loader.h"
+#include "beer_libs.h"
 #include "core_beer_blob.h"
 
 #ifdef BEEROS_GFX
@@ -292,6 +293,7 @@ void beeros_main(void) {
 
     blk_register_natives();
     blk_load_library();
+    beer_load_libraries();
 
 #ifdef BEEROS_GFX
     uart_puts("[beeros] gfx init...\r\n");

@@ -1,6 +1,7 @@
 # Packages
 
-Status: design; the emergency key is implemented. Builds on beerlang's existing project tooling (`beer.edn`,
+Status: implemented (`lib/ustar.beer`, tar paths in `lib/fs.beer`,
+`lib/pkg.beer`, sample `packages/hello`); remapping is not. Builds on beerlang's existing project tooling (`beer.edn`,
 `beer build`, `beer ubertar`, tar index); the beerlang side is requested in
 beerlang's `TODO.md` ("beeros requests", item 5).
 
@@ -39,6 +40,27 @@ Keys beeros reads beyond `:main` (all optional, added when needed):
 (minimum version), `:assets` (non-code files to extract, e.g. fonts or
 levels, see below).
 
+## Using it
+
+```clojure
+(beer.pkg/installed)              ; {"hello" {:path "/pkg/hello.tar" :version "0.1.0" ...}}
+(beer.pkg/run "hello")            ; => banner, "Hello, WORLD!" (:args from beer.edn)
+(beer.pkg/run "hello" "ada")      ; -main gets "ada"
+(beer.pkg/exec "hello" "you")     ; /bin/hello.beer, beer.pkg/*args* = ["you"]
+(beer.pkg/resource "hello" "assets/banner.txt")
+(beer.fs/ls "/pkg/hello.tar/hello")      ; ("core.beer" "fmt.beer")
+(beer.pkg/rescan!)                ; after copying a tar into /pkg
+```
+
+How it fits together: `beer.fs` reads paths that go through a tar file
+(`/pkg/hello.tar/hello/core.beer`) out of the archive (`beer.ustar`,
+cached until the tar's inode changes). `rescan!` (also at boot) sets
+`beer.core/*load-path*` to `["/lib/" "/pkg/hello.tar/" ...]`, so
+beerlang's own `require` finds package namespaces through `*fs*` with no
+tar knowledge of its own, and warns when two tars carry the same
+namespace file. `make disk` turns each `packages/<name>/` (`beer.edn`,
+`src/`, optional `assets/`) into `/pkg/<name>.tar`.
+
 ## Installing
 
 Copy the tar into a package directory on the load path:
@@ -47,7 +69,7 @@ Copy the tar into a package directory on the load path:
 @beer.fs/load-path   ; ["/lib" "/pkg"]
 ```
 
-At boot (and on `(beer.pkg/rescan!)`), every `*.tar` in a load-path
+At boot (and on `(beer.pkg/rescan!)`), every `*.tar` in a `pkg-path`
 directory is indexed: its `.beer` entries become requirable namespaces,
 exactly like beerlang's `BEERPATH` on a host. Plain directories and tars
 mix freely (directories for development, tars for distribution); the
@@ -121,11 +143,10 @@ program can't block.
 
 ## Implementation order
 
-1. Tar reader in beerlang over `beer.fs/read-bytes` (ustar: 512-byte
-   headers, name/size/type) → `{path {:offset :size}}` index per tar.
-2. `beer.fs` require wrapper consults tar indexes on load-path; `/pkg`
-   added to load-path and the rootfs.
-3. `beer.pkg`: `run`, `exec`, `resource`, `rescan!`, `installed`.
+1. ~~Tar reader over `beer.fs/read-bytes`~~ (`beer.ustar`: ustar, pax
+   `path`/`size`, GNU long names).
+2. ~~Tars on the load path~~ (tar paths in `beer.fs` + `*load-path*`).
+3. ~~`beer.pkg`: `run`, `exec`, `resource`, `rescan!`, `installed`~~.
 4. ~~UART RX interrupt + ring buffer; break-key detection; wire the
    interrupt~~ (done).
 5. ~~Move require onto beerlang's file system hook, deleting the beeros

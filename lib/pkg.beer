@@ -1,0 +1,123 @@
+;; beer.pkg — packages: tar files that carry beer.edn (docs/packages.md)
+;;
+;; A package is a tar with the project's beer.edn at the top and its
+;; namespaces below it (foo/core.beer), as `beer build` writes it or
+;; `tar -cf foo.tar beer.edn -C src .`. Installing is copying it into a
+;; directory on pkg-path (/pkg); every tar there goes on *load-path*, so
+;; its namespaces are requirable, and its files read through beer.fs as
+;; /pkg/foo.tar/<path>.
+;;
+;;   (installed)                  ; {"hello" {:path "/pkg/hello.tar" :version ...}}
+;;   (run "hello" "you")          ; require :main, call (-main "you")
+;;   (resource "hello" "assets/banner.txt")
+;;   (exec "hello" "you")         ; /bin/hello.beer with *args* ["you"]
+;;   (rescan!)                    ; after copying a tar in
+
+(ns beer.pkg)
+
+(def pkg-path (atom ["/pkg"]))
+(def bin-path (atom ["/bin"]))
+(def lib-path ["/lib/"])          ; *load-path* entries ahead of the packages
+
+(def *args* [])                   ; arguments of the script exec runs
+
+(defn tars
+  "Paths of the package tars on pkg-path, in order."
+  []
+  (mapcat (fn [dir]
+            (if (beer.fs/exists? dir)
+              (map (fn [n] (str dir "/" n))
+                   (sort (filter (fn [n] (beer.string/ends-with? n ".tar")) (beer.fs/ls dir))))
+              []))
+          @pkg-path))
+
+(defn project
+  "The package's beer.edn as a map, or nil if it has none."
+  [tar]
+  (let [p (str tar "/beer.edn")]
+    (when (beer.fs/exists? p)
+      (read-string (beer.fs/slurp p)))))
+
+(defn installed
+  "{name info} for every package on pkg-path; the first one wins a name."
+  []
+  (reduce (fn [acc tar]
+            (let [edn (try (project tar) (catch e nil))
+                  nm  (or (:name edn) (let [f (last (beer.string/split tar "/"))]
+                                        (subs f 0 (- (count f) 4))))]
+              (if (get acc nm)
+                acc
+                (assoc acc nm (assoc (or edn {}) :path tar)))))
+          {} (tars)))
+
+(defn namespaces
+  "Namespace files (foo/core.beer) in the tar."
+  [tar]
+  (filter (fn [n] (beer.string/ends-with? n ".beer"))
+          (keys (:index (beer.fs/tar-open tar)))))
+
+(defn warn-duplicates! [ts]
+  (reduce (fn [seen tar]
+            (reduce (fn [seen f]
+                      (if (get seen f)
+                        (do (println (str "[beeros] " f " is in " (get seen f) " and " tar
+                                          "; the first one is used"))
+                            seen)
+                        (assoc seen f tar)))
+                    seen (namespaces tar)))
+          {} ts)
+  nil)
+
+(defn rescan!
+  "Put lib-path and every package tar on *load-path*; returns (installed)."
+  []
+  (let [ts (tars)]
+    (warn-duplicates! ts)
+    (def beer.core/*load-path* (vec (concat lib-path (map (fn [t] (str t "/")) ts))))
+    (installed)))
+
+(defn find-package
+  "Tar path for a package name, or the path itself."
+  [x]
+  (if (beer.string/starts-with? x "/")
+    x
+    (or (:path (get (installed) x))
+        (throw (ex-info (str "pkg: no package " x " on " (pr-str @pkg-path))
+                        {:package x :reason :not-installed})))))
+
+(defn run
+  "Require the package's :main namespace and call its -main with args (or
+  the beer.edn :args when none are given)."
+  [x & args]
+  (let [tar  (find-package x)
+        edn  (project tar)
+        main (:main edn)]
+    (when (nil? main)
+      (throw (ex-info (str "pkg: " tar " has no :main in beer.edn") {:path tar :reason :no-main})))
+    (when (not (some (fn [d] (= d (str tar "/"))) beer.core/*load-path*))
+      (def beer.core/*load-path* (conj (vec beer.core/*load-path*) (str tar "/"))))
+    (require main)
+    (apply (eval (symbol (str main "/-main")))
+           (if (empty? args) (or (:args edn) []) args))))
+
+(defn resource
+  "A file of the package as a string."
+  [x path]
+  (beer.fs/slurp (str (find-package x) "/" path)))
+
+(defn resource-bytes [x path]
+  (beer.fs/read-bytes (str (find-package x) "/" path)))
+
+(defn exec
+  "Run /bin/<name>.beer (first on bin-path) with *args* bound to args."
+  [nm & args]
+  (let [script (some (fn [d] (let [p (str d "/" nm ".beer")] (when (beer.fs/exists? p) p)))
+                     @bin-path)]
+    (when (nil? script)
+      (throw (ex-info (str "pkg: no " nm " on " (pr-str @bin-path)) {:name nm :reason :not-found})))
+    (let [saved *args* cur *ns*]
+      (def beer.pkg/*args* (vec args))
+      (try (load-file script)
+           (finally (def beer.pkg/*args* saved) (in-ns cur))))))
+
+(when (not (empty? @beer.fs/mount-table)) (rescan!))

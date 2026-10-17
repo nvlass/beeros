@@ -60,11 +60,79 @@
   (let [[fs rel] (locate path)]
     ((get (get impls (:type fs)) k) fs rel)))
 
-(defn ls         [path] (op :ls path))
-(defn slurp      [path] (op :slurp path))
-(defn read-bytes [path] (op :read-bytes path))
-(defn stat       [path] (op :stat path))
-(defn lstat      [path] (op :lstat path))
+;; ── paths inside tar files ────────────────────────────────────────────────
+;; A tar file reads like a directory: /pkg/hello.tar/hello/core.beer is the
+;; entry hello/core.beer of /pkg/hello.tar (packages, docs/packages.md).
+;; Read-only; an archive is read once and kept until its inode changes.
+
+(def tar-cache (atom {}))   ; tar path -> {:key :bytes :index}
+
+(defn tar-file? [path]
+  (and (beer.string/ends-with? path ".tar")
+       (= :file (try (:type (op :stat path)) (catch e nil)))))
+
+(defn split-tar
+  "[tar-path inner] when path goes through a tar file (inner \"\" is the
+  archive's top), else nil."
+  [path]
+  (let [parts (beer.string/split path "/")]
+    (loop [i 1 prefix ""]
+      (when (< i (count parts))
+        (let [prefix (str prefix "/" (nth parts i))]
+          (if (and (< (inc i) (count parts)) (tar-file? prefix))
+            [prefix (beer.string/join "/" (filter (fn [x] (not= x "")) (drop (inc i) parts)))]
+            (if (and (= (inc i) (count parts)) (beer.string/ends-with? path ".tar/") (tar-file? prefix))
+              [prefix ""]
+              (recur (inc i) prefix))))))))
+
+(defn tar-open [tp]
+  (let [st (op :stat tp)
+        k  [(:ino st) (:mtime st) (:size st)]
+        c  (get @tar-cache tp)]
+    (if (and c (= (:key c) k))
+      c
+      (let [b (op :read-bytes tp)
+            t {:key k :bytes b :index (beer.ustar/index b)}]
+        (swap! tar-cache assoc tp t)
+        t))))
+
+(defn tar-fail! [opk path reason]
+  (throw (ex-info (str "fs: " path ": " (name reason)) {:op opk :path path :reason reason})))
+
+(defn tar-dir? [index inner]
+  (or (= inner "")
+      (= :dir (:type (get index inner)))
+      (some (fn [n] (beer.string/starts-with? n (str inner "/"))) (keys index))))
+
+(defn tar-op [k path tp inner]
+  (let [t (tar-open tp) index (:index t) e (get index inner)]
+    (cond
+      (or (= k :stat) (= k :lstat))
+      (cond (and e (not= (:type e) :dir)) {:type (:type e) :size (:size e) :tar tp}
+            (tar-dir? index inner)      {:type :dir :size 0 :tar tp}
+            :else (tar-fail! k path :not-found))
+      (= k :ls)
+      (if (tar-dir? index inner)
+        (let [pre (if (= inner "") "" (str inner "/"))]
+          (sort (distinct (map (fn [n] (first (beer.string/split (subs n (count pre)) "/")))
+                               (filter (fn [n] (and (beer.string/starts-with? n pre) (not= n pre)))
+                                       (keys index))))))
+        (tar-fail! k path :not-a-directory))
+      (nil? e) (tar-fail! k path :not-found)
+      (= (:type e) :dir) (tar-fail! k path :is-a-directory)
+      (= k :read-bytes) (beer.ustar/entry-bytes (:bytes t) e)
+      (= k :slurp) (or (beer.ustar/entry-string (:bytes t) e) (tar-fail! k path :not-utf8))
+      :else (tar-fail! k path :not-supported))))
+
+(defn path-op [k path]
+  (let [st (when (beer.string/includes? path ".tar/") (split-tar path))]
+    (if st (tar-op k path (first st) (second st)) (op k path))))
+
+(defn ls         [path] (path-op :ls path))
+(defn slurp      [path] (path-op :slurp path))
+(defn read-bytes [path] (path-op :read-bytes path))
+(defn stat       [path] (path-op :stat path))
+(defn lstat      [path] (path-op :lstat path))
 (defn readlink   [path] (op :readlink path))
 
 (defn exists? [path]

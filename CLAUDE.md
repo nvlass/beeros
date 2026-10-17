@@ -65,13 +65,16 @@ beeros/
 │   ├── virtio.beer    ← beer.virtio: virtio-mmio transport + split virtqueues
 │   ├── virtio_blk.beer ← beer.virtio-blk: virtio-blk driver in beerlang (boot default)
 │   ├── ext2.beer      ← beer.ext2: read-only ext2 over a block-device map
-│   ├── fs.beer        ← beer.fs: mount table, path ops, beer.core/*fs* hook; mounts / at boot
+│   ├── fs.beer        ← beer.fs: mount table, path ops (also inside .tar files), *fs* hook; mounts /
+│   ├── ustar.beer     ← beer.ustar: tar index/entries from a ByteBuffer
+│   ├── pkg.beer       ← beer.pkg: /pkg tars on *load-path*, run/exec/resource
 │   ├── input.beer     ← beer.input: event queue, held keys, key->char
 │   ├── virtio_input.beer ← beer.virtio-input: keyboard/mouse/tablet driver
 │   ├── tty.beer       ← beer.tty: ttys (keystroke source + ANSI sink); serial tty
 │   ├── lineedit.beer  ← beer.lineedit: REPL line editor (history, completion)
 │   └── gfx.beer       ← beerlang drawing library
-├── rootfs/            ← root filesystem contents (etc/init.beer, etc/beeros.edn, lib/...)
+├── rootfs/            ← root filesystem contents (etc/init.beer, etc/beeros.edn, lib/, bin/)
+├── packages/<name>/   ← sample packages (beer.edn, src/, assets/) → /pkg/<name>.tar
 ├── scripts/qemu-drive.py ← scripted REPL + monitor/QMP input for QEMU tests
 └── Makefile
 ```
@@ -219,6 +222,16 @@ images are rejected, not misread). Build images with e2fsprogs
 (`brew install e2fsprogs`, keg-only in `/opt/homebrew/opt/e2fsprogs/sbin`):
 `mke2fs -t ext2 -d rootdir/ disk.img 8M`. QEMU needs `-m 256M` (from
 `board.mk`) when invoked by hand.
+
+## Packages (`beer.pkg`)
+
+Design and API: `docs/packages.md`. A package is a tar with `beer.edn`
+at the top (`:name :main :args ...`) and namespaces below it. `beer.fs`
+reads paths through tar files (`/pkg/hello.tar/hello/core.beer`), and
+`beer.pkg/rescan!` (at boot) puts `/lib/` and every `/pkg/*.tar/` on
+`beer.core/*load-path*`. `(beer.pkg/run "hello" & args)` requires
+`:main` and calls `-main`. Inside a fn, `def` of an unqualified name
+defines in the *current* ns at run time: qualify it (`beer.pkg/*args*`).
 
 ## Input (`beer.input`)
 

@@ -1,0 +1,4 @@
+(ns hello.fmt
+  (:require [beer.string :as s]))
+
+(defn greeting [n] (str "Hello, " (s/upper-case n) "!"))

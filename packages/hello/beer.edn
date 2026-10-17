@@ -1,0 +1,6 @@
+{:name        "hello"
+ :version     "0.1.0"
+ :description "Sample beeros package: a namespace, a dependency inside the tar, an asset"
+ :paths       ["src"]
+ :main        hello.core
+ :args        ["world"]}

@@ -1,0 +1,2 @@
+;; /bin/hello.beer — launcher: (beer.pkg/exec "hello" "you")
+(apply beer.pkg/run "hello" beer.pkg/*args*)

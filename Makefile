@@ -141,7 +141,7 @@ kernel/%_beer_blob.h: lib/%.beer
 	xxd -i $< > $@
 
 # Pure-beerlang libraries loaded by kernel/beer_libs.c, in load order
-BEER_LIBS = virtio virtio_blk ext2 fs input virtio_input tty lineedit
+BEER_LIBS = virtio virtio_blk ext2 fs ustar pkg input virtio_input tty lineedit
 BEER_LIB_BLOBS = $(patsubst %,kernel/%_beer_blob.h,$(BEER_LIBS))
 
 # Fixed array name: xxd -i would derive it from the submodule path
@@ -160,15 +160,25 @@ DISK_SIZE  ?= 16M
 DISK_IMG    = build/disk.img
 ROOTFS_STAGE = build/rootfs
 ROOTFS_BEERLANG_LIBS = string json test digest crypto tar
-ROOTFS_DIRS = bin etc lib/beer share/fonts var
+ROOTFS_DIRS = bin etc lib/beer pkg share/fonts var
 
 disk: $(DISK_IMG)
 
-$(DISK_IMG): Makefile $(shell find rootfs -type f) $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS))
+# packages/<name>/ (beer.edn, src/, optional assets/) become /pkg/<name>.tar:
+# beer.edn and assets at the top, src's namespaces below it. ustar, without
+# macOS's ._ resource files.
+PACKAGES = $(notdir $(wildcard packages/*))
+PKG_TAR  = COPYFILE_DISABLE=1 tar --format ustar
+
+$(DISK_IMG): Makefile $(shell find rootfs packages -type f) $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS))
 	rm -rf $(ROOTFS_STAGE) $@
 	mkdir -p $(addprefix $(ROOTFS_STAGE)/,$(ROOTFS_DIRS))
 	cp -R rootfs/. $(ROOTFS_STAGE)/
 	cp $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS)) $(ROOTFS_STAGE)/lib/beer/
+	for p in $(PACKAGES); do \
+	  $(PKG_TAR) -cf $(ROOTFS_STAGE)/pkg/$$p.tar -C packages/$$p beer.edn \
+	    $$(cd packages/$$p && ls -d assets 2>/dev/null) -C src . || exit 1; \
+	done
 	$(MKE2FS) -q -t ext2 -L beeros -d $(ROOTFS_STAGE) $@ $(DISK_SIZE)
 
 # make run-disk: build the rootfs image and boot with it attached

@@ -10,6 +10,8 @@
 #include "virtio_blk_beer_blob.h"
 #include "ext2_beer_blob.h"
 #include "fs_beer_blob.h"
+#include "ustar_beer_blob.h"
+#include "pkg_beer_blob.h"
 #include "input_beer_blob.h"
 #include "virtio_input_beer_blob.h"
 #include "tty_beer_blob.h"
@@ -22,6 +24,8 @@ void beer_load_libraries(void) {
     LOAD(lib_virtio_blk_beer,   "lib/virtio_blk.beer");   /* attaches disks */
     LOAD(lib_ext2_beer,         "lib/ext2.beer");
     LOAD(lib_fs_beer,           "lib/fs.beer");           /* mounts / */
+    LOAD(lib_ustar_beer,        "lib/ustar.beer");
+    LOAD(lib_pkg_beer,          "lib/pkg.beer");          /* /pkg tars onto *load-path* */
     LOAD(lib_input_beer,        "lib/input.beer");
     LOAD(lib_virtio_input_beer, "lib/virtio_input.beer"); /* starts input tasks */
     LOAD(lib_tty_beer,          "lib/tty.beer");

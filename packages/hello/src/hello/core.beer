@@ -1,0 +1,8 @@
+(ns hello.core
+  (:require [hello.fmt :as fmt]))
+
+(defn -main [& names]
+  (println (beer.pkg/resource "hello" "assets/banner.txt"))
+  (doseq [n names]
+    (println (fmt/greeting n)))
+  (count names))

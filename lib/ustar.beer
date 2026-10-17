@@ -1,0 +1,99 @@
+;; beer.ustar — read tar archives held in a ByteBuffer
+;;
+;; ustar and its common extensions: the 155-byte name prefix, pax 'x'
+;; headers (path=, size=) and GNU 'L' long names. A leading "./" is
+;; dropped, so `tar -C src .` archives index as foo/core.beer. beerlang's
+;; own beer.tar works on host files; this one works on bytes from any
+;; filesystem (beer.fs/read-bytes).
+;;
+;;   (def t (index (beer.fs/read-bytes "/pkg/hello.tar")))
+;;   (keys t)                          ; ("beer.edn" "hello/core.beer" ...)
+;;   (entry-string buf (get t "beer.edn"))
+
+(ns beer.ustar)
+
+(def block 512)
+
+(defn cstring
+  "The NUL-terminated string in the len-byte field at off."
+  [buf off len]
+  (let [n (loop [i 0]
+            (if (and (< i len) (not= 0 (beer.bytes/u8 buf (+ off i)))) (recur (inc i)) i))]
+    (beer.bytes/->string-lossy (beer.bytes/slice buf off n))))
+
+(defn octal
+  "The octal number in the len-byte field at off (spaces and NULs end or pad it)."
+  [buf off len]
+  (loop [i 0 v 0 seen? false]
+    (if (>= i len)
+      v
+      (let [b (beer.bytes/u8 buf (+ off i))]
+        (cond (and (>= b 48) (<= b 55)) (recur (inc i) (+ (* v 8) (- b 48)) true)
+              (and (= b 32) (not seen?)) (recur (inc i) v false)
+              :else v)))))
+
+(defn zero-block? [buf off]
+  (loop [i 0]
+    (cond (>= i block) true
+          (not= 0 (beer.bytes/u8 buf (+ off i))) false
+          :else (recur (inc i)))))
+
+(defn clean-name [s]
+  (let [s (if (beer.string/starts-with? s "./") (subs s 2) s)]
+    (if (and (> (count s) 0) (beer.string/ends-with? s "/")) (subs s 0 (dec (count s))) s)))
+
+(defn pax-records
+  "{key value} from a pax extended header's data: lines \"len key=value\\n\"."
+  [s]
+  (into {} (map (fn [line]
+                  (let [kv (beer.string/join " " (rest (beer.string/split line " ")))
+                        parts (when kv (beer.string/split kv "="))]
+                    (when (and parts (> (count parts) 1))
+                      [(first parts) (beer.string/join "=" (rest parts))])))
+                (filter (fn [l] (not= l "")) (beer.string/split s "\n")))))
+
+(defn entry-type [flag]
+  (cond (or (= flag 0) (= flag 48) (= flag 55)) :file   ; NUL, '0', '7'
+        (= flag 53) :dir                                ; '5'
+        (or (= flag 49) (= flag 50)) :link              ; '1' hard, '2' sym
+        :else :other))
+
+(defn index
+  "{name {:type :offset :size}} for the archive in buf; :offset is where
+  the entry's data starts."
+  [buf]
+  (let [len (beer.bytes/capacity buf)]
+    (loop [off 0 acc {} next-name nil next-size nil]
+      (if (or (> (+ off block) len) (zero-block? buf off))
+        acc
+        (let [flag  (beer.bytes/u8 buf (+ off 156))
+              size  (or next-size (octal buf (+ off 124) 12))
+              data  (+ off block)
+              after (+ data (* block (quot (+ size (dec block)) block)))]
+          (when (> (+ data size) len)
+            (throw (ex-info "ustar: archive is truncated" {:offset off :reason :truncated})))
+          (cond
+            (= flag 120)                      ; 'x': pax header for the next entry
+            (let [r (pax-records (cstring buf data size))]
+              (recur after acc (get r "path")
+                     (let [s (get r "size")] (when s (read-string s)))))
+            (= flag 103) (recur after acc next-name next-size)   ; 'g': global pax, ignored
+            (= flag 76)                       ; 'L': GNU long name for the next entry
+            (recur after acc (cstring buf data size) next-size)
+            :else
+            (let [magic  (cstring buf (+ off 257) 6)
+                  prefix (if (= magic "ustar") (cstring buf (+ off 345) 155) "")
+                  nm     (cstring buf off 100)
+                  full   (clean-name (or next-name (if (= prefix "") nm (str prefix "/" nm))))]
+              (recur after
+                     (if (or (= full "") (= full "."))
+                       acc
+                       (assoc acc full {:type (entry-type flag) :offset data :size size}))
+                     nil nil))))))))
+
+(defn entry-bytes [buf e] (beer.bytes/slice buf (:offset e) (:size e)))
+
+(defn entry-string
+  "The entry's data as a string, or nil if it isn't UTF-8."
+  [buf e]
+  (beer.bytes/->string (entry-bytes buf e)))

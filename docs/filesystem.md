@@ -109,7 +109,9 @@ At boot the first block device holding ext2 is mounted at `/`.
 (load-file "/lib/demo.beer")           ; beerlang's own, through *fs*
 ```
 
-Paths are absolute; the longest matching mount point wins. A filesystem
+Paths are absolute; the longest matching mount point wins. A path that
+goes through a tar file reads from the archive (`/pkg/hello.tar/hello/core.beer`;
+see `docs/packages.md`). A filesystem
 type plugs in through `beer.fs/impls` (`{:ext2 {:ls ... :slurp ...}}`).
 
 ### `require`, `load-file`, `slurp` from the filesystem

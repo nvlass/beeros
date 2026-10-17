@@ -176,7 +176,9 @@ run-disk: disk
 	$(MAKE) run BOARD=$(BOARD) DISK=$(DISK_IMG)
 
 # DISK=path/to/image.img attaches a raw image as a virtio-blk device
-DISK_FLAGS = $(if $(DISK),-drive file=$(DISK),if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0)
+# (the commas go through $(comma): bare ones would split $(if ...)'s arguments)
+comma := ,
+DISK_FLAGS = $(if $(DISK),-drive file=$(DISK)$(comma)if=none$(comma)format=raw$(comma)id=hd0 -device virtio-blk-device$(comma)drive=hd0)
 # Keyboard + mouse for the display window (virtio-input)
 INPUT_FLAGS = -device virtio-keyboard-device -device virtio-mouse-device
 

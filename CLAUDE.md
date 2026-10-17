@@ -57,6 +57,7 @@ beeros/
 ├── lib/
 │   ├── mem.beer       ← MMIO helpers + named MMIO constants
 │   ├── blk.beer       ← beer.blk: block-device maps, registry, error policy
+│   ├── virtio_blk.beer ← beer.virtio-blk: virtio-blk driver in beerlang (boot default)
 │   └── gfx.beer       ← beerlang drawing library
 └── Makefile
 ```
@@ -174,9 +175,11 @@ geometry; filesystems only ever see the map. Always built (no flag).
 - `beer.blk.native` — its natives; return `nil` or an error keyword.
 - `lib/blk.beer` — wraps them into device maps (throwing `ex-info`),
   registry (`devices`, `device`, `register-device!`), `read-sectors`,
-  `write-sectors!`, `flush!`. Registers every probed device at boot.
-- A beerlang virtio-blk driver is planned as the default; the C one stays as
-  reference/fallback.
+  `write-sectors!`, `flush!`, `use-native-driver!`.
+- `lib/virtio_blk.beer` — the same driver in beerlang on `beer.mem` +
+  `beer.bytes`; the **boot default** (`boot-driver` at the end of the file).
+  `(beer.virtio-blk/attach!)` / `(beer.blk/use-native-driver!)` switch at
+  the REPL; one driver owns a device at a time.
 
 Attach a disk: `make run BOARD=virt-riscv DISK=disk.img` (raw image).
 

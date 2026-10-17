@@ -67,7 +67,15 @@
 (defn flush! [dev]
   (when-let [f (:flush! dev)] (f)))
 
-;; ── boot: register what the drivers found ─────────────────────────────────
+;; ── switching drivers ─────────────────────────────────────────────────────
+;; Which driver owns the devices at boot is chosen at the end of
+;; lib/virtio_blk.beer. One driver per device: initialising resets it.
 
-(doseq [i (range (beer.blk.native/count))]
-  (register-device! (native-virtio-device i)))
+(defn use-native-driver!
+  "Hand every virtio-blk device to the C driver and register it as
+  virtio0, virtio1, ..."
+  []
+  (beer.blk.native/probe!)
+  (doseq [i (range (beer.blk.native/count))]
+    (register-device! (native-virtio-device i)))
+  (devices))

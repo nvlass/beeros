@@ -1,9 +1,9 @@
 # Block device interface
 
-Status: interface and C virtio-blk driver implemented (`lib/blk.beer`,
-`kernel/virtio_blk.c`, `kernel/blk_natives.c`). The beerlang virtio-blk
-driver — intended to become the default, so drivers stay hackable from the
-REPL — is next.
+Status: implemented. Two virtio-blk drivers behind the same map: the
+beerlang one (`lib/virtio_blk.beer`, the boot default, so drivers stay
+hackable from the REPL) and the C one (`kernel/virtio_blk.c`, reference and
+fallback). Shared layer: `lib/blk.beer`.
 
 The contract between storage drivers (virtio-blk, SD/eMMC, RAM disk) and
 everything that reads sectors (tar loader, FAT/littlefs, partition table
@@ -64,8 +64,8 @@ All of these produce the same map. Which one is in use is a boot-time choice.
 
 | Backend | Where | Notes |
 |---|---|---|
-| virtio-blk (C) | QEMU | **Implemented.** `kernel/virtio_blk.c`, natives in `beer.blk.native`, map built by `native-virtio-device` in `lib/blk.beer`. Reference/fallback. |
-| virtio-blk (beerlang) | QEMU | **Next; intended default.** Same map, built entirely on `beer.mem` + `beer.bytes`. |
+| virtio-blk (beerlang) | QEMU | **Default.** `lib/virtio_blk.beer`, built on `beer.mem` + `beer.bytes`. |
+| virtio-blk (C) | QEMU | **Fallback/reference.** `kernel/virtio_blk.c`, natives in `beer.blk.native`, map built by `native-virtio-device` in `lib/blk.beer`. |
 | SD/eMMC | real board | Per-SoC controller driver (D1 SMHC, JH7110 DW MSHC). |
 | RAM disk | anywhere | Backed by one ByteBuffer, e.g. a disk image embedded at build time. Useful for tests and diskless boot. |
 
@@ -101,19 +101,27 @@ above the interface notices. A C driver registers natives such as
    :flush! (fn [] (beer.blk/flush! id))})
 ```
 
-Both stay in the tree. Once the beerlang driver matches the C one against
-the same disk image, boot registers the beerlang one by default and the C
-driver remains as a fallback (and as a reference when debugging the
-beerlang one). The C natives return `nil` or an error keyword; turning that
+Both stay in the tree. One driver owns a device at a time (initialising
+resets the device onto that driver's rings); switch at the REPL with
+`(beer.virtio-blk/attach!)` / `(beer.blk/use-native-driver!)`. The boot
+default is `boot-driver` at the end of `lib/virtio_blk.beer`; the C driver
+doesn't touch the hardware unless chosen.
+
+Measured on QEMU (TCG), 256 reads of 8 sectors: beerlang ~75 ms, C ~19 ms.
+It's per-request overhead (no data copies in either), so larger requests
+narrow it. Both pass the same checks: single/multi/last-sector reads, write +
+flush visible on the host, unaligned buffer offsets, out-of-range and
+read-only errors, and identical data when switching drivers mid-session. The C natives return `nil` or an error keyword; turning that
 into `ex-info` happens in `lib/blk.beer`, so error policy is editable too.
 
-What the beerlang driver needs that the C one gets for free: the descriptor
-table, available and used rings must be 16/2/4-byte aligned and never move.
-C uses static arrays with `__attribute__((aligned))`; a ByteBuffer's data
-start is not 16-byte aligned (see `beerlang-bytebuffer.md`). Options: a
-`beer.bytes/alloc-aligned`, a reserved DMA region exposed by `beer.mem`, or
-over-allocate a ByteBuffer and round its address up. The payload buffers
-themselves need no alignment.
+Ring alignment: the descriptor table, available and used rings must be
+16/2/4-byte aligned and never move. C uses static arrays with
+`__attribute__((aligned))`. A ByteBuffer's data starts 4 bytes off a
+16-byte boundary, so the beerlang driver over-allocates and rounds up
+(`alloc-aligned` in `lib/virtio_blk.beer`), keeping the offset alongside
+the buffer. An aligned ByteBuffer constructor is noted in beerlang's
+TODO.md for when a second driver needs it. Payload buffers need no
+alignment.
 
 ## Partitions
 

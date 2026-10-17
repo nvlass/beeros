@@ -142,6 +142,9 @@ kernel/mem_beer_blob.h: lib/mem.beer
 kernel/blk_beer_blob.h: lib/blk.beer
 	xxd -i $< > $@
 
+kernel/virtio_blk_beer_blob.h: lib/virtio_blk.beer
+	xxd -i $< > $@
+
 # Fixed array name: xxd -i would derive it from the submodule path
 kernel/core_beer_blob.h: $(BEER_ROOT)/lib/core.beer
 	{ echo 'unsigned char core_beer[] = {'; xxd -i < $<; echo '};'; \
@@ -180,7 +183,7 @@ disasm: beeros.elf
 $(BUILD_DIR)/kernel/gfx_natives.o: kernel/gfx_beer_blob.h
 $(BUILD_DIR)/kernel/mem_natives.o: kernel/mem_beer_blob.h
 $(BUILD_DIR)/kernel/repl_uart.o: kernel/core_beer_blob.h
-$(BUILD_DIR)/kernel/blk_natives.o: kernel/blk_beer_blob.h
+$(BUILD_DIR)/kernel/blk_natives.o: kernel/blk_beer_blob.h kernel/virtio_blk_beer_blob.h
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -191,4 +194,4 @@ $(BUILD_DIR)/%.o: %.S
 	$(AS) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf build/ beeros.elf beeros.bin kernel/gfx_beer_blob.h kernel/mem_beer_blob.h kernel/core_beer_blob.h kernel/blk_beer_blob.h
+	rm -rf build/ beeros.elf beeros.bin kernel/gfx_beer_blob.h kernel/mem_beer_blob.h kernel/core_beer_blob.h kernel/blk_beer_blob.h kernel/virtio_blk_beer_blob.h

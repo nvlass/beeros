@@ -5,6 +5,7 @@
  * maps and keeping the registry all live in lib/blk.beer, so that policy
  * stays editable from the REPL.
  *
+ *   (probe!)                      → (re)initialise all devices; count
  *   (count)                       → number of virtio-blk devices
  *   (sectors id) (read-only? id) (can-flush? id)
  *   (read!  id lba n buf off)     → nil | :io-error :timeout :out-of-range ...
@@ -26,6 +27,7 @@
 #include "vm.h"
 
 #include "blk_beer_blob.h"
+#include "virtio_blk_beer_blob.h"
 
 static void reg(Namespace* ns, const char* name, NativeFn fn) {
     Value f = native_function_new(-1, fn, name);
@@ -50,6 +52,11 @@ static bool fixnum_arg(Value v, int64_t min, int64_t* out) {
     if (!is_fixnum(v) || untag_fixnum(v) < min) return false;
     *out = untag_fixnum(v);
     return true;
+}
+
+static Value native_probe(VM* vm, int argc, Value* argv) {
+    (void)vm; (void)argc; (void)argv;
+    return make_fixnum(virtio_blk_probe());
 }
 
 static Value native_count(VM* vm, int argc, Value* argv) {
@@ -102,10 +109,12 @@ static Value native_flush(VM* vm, int argc, Value* argv) {
     return status_value(virtio_blk_flush((int)id));
 }
 
+/* Doesn't probe: the C driver only touches the hardware if lib/virtio_blk.beer
+ * picks it at boot (or (beer.blk/use-native-driver!) is called later). */
 void blk_register_natives(void) {
-    virtio_blk_probe();
     Namespace* ns = namespace_registry_get_or_create(global_namespace_registry,
                                                      "beer.blk.native");
+    reg(ns, "probe!",     native_probe);
     reg(ns, "count",      native_count);
     reg(ns, "sectors",    native_sectors);
     reg(ns, "read-only?", native_read_only);
@@ -117,4 +126,5 @@ void blk_register_natives(void) {
 
 void blk_load_library(void) {
     beer_load_blob(lib_blk_beer, lib_blk_beer_len, "lib/blk.beer", NULL);
+    beer_load_blob(lib_virtio_blk_beer, lib_virtio_blk_beer_len, "lib/virtio_blk.beer", NULL);
 }

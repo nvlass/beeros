@@ -20,6 +20,23 @@ beerlang's POSIX-specific files are replaced by beeros equivalents at link time:
 
 Everything else (VM, compiler, GC, types, channels, actors, stdlib) compiles unchanged.
 
+**Embedded `.beer` libraries.** There is no filesystem, so beerlang's own
+`core_register_macros()` can't `fopen` `lib/core.beer` (it prints a harmless
+`NOTE: ... not found`). beeros embeds `beerlang/lib/core.beer` via `xxd` and
+loads it into `beer.core` right after `namespace_init()` — it defines `defn`,
+`ns`, `let` (destructuring), `when`, `loop`, `->` etc., which `lib/mem.beer` and
+`lib/gfx.beer` need. All three go through `beer_load_blob()` (`kernel/blob_loader.c`).
+Every function compiled at boot or at the REPL gets `function_set_ns_name()` so
+its free symbols resolve in the defining namespace (beerlang requires this since
+`232fd28`). The reader has no `^` metadata support and there is no `defn-` or
+Java interop (`Math/abs`) — keep `lib/*.beer` to plain beerlang.
+
+**Reactor shims.** `kernel/reactor_baremetal.c` / `io_reactor_baremetal.c` are
+no-op stubs of beerlang's `reactor.h` (4 fns) and `io_reactor.h` (7 fns). No
+beeros task ever waits on an fd, so `io_reactor_waiting()` returns 0 and the
+scheduler never calls into them. If beerlang changes those headers again, mirror
+`beerlang/wasm/io_reactor_stub.c`.
+
 ## Directory structure
 
 ```
@@ -33,7 +50,8 @@ beeros/
 │   ├── mem_natives.h / .c    ← beer.mem namespace (always loaded at boot)
 │   ├── gfx.h / gfx.c         ← framebuffer HAL
 │   ├── gfx_natives.h / .c    ← beer.gfx namespace + lib/gfx.beer loader
-│   └── repl_uart.c            ← REPL entry; boots mem then optional gfx
+│   ├── blob_loader.h / .c    ← shared read→compile→run loader for embedded .beer libs
+│   └── repl_uart.c            ← REPL entry; boots core.beer, mem, then optional gfx
 ├── lib/
 │   ├── mem.beer       ← MMIO helpers + named MMIO constants
 │   └── gfx.beer       ← beerlang drawing library
@@ -147,7 +165,7 @@ Two-layer architecture, no beerlang submodule changes:
 **Layer 1 — C HAL** (`kernel/gfx.h`, `kernel/gfx.c`, `platform/<board>/hal/gfx_ramfb.c`):
 - `gfx_init(width, height, fb_addr)` — called by platform once the framebuffer address is known
 - `gfx_set_pixel(x, y, color)` / `gfx_fill_rect(x, y, w, h, color)` — XRGB8888 format
-- virt-riscv uses QEMU's `ramfb` device: one fw-cfg DMA handshake at boot maps the buffer to `0x84000000`
+- virt-riscv uses QEMU's `ramfb` device: one fw-cfg DMA handshake at boot maps the buffer to `0x84000000`. All fw-cfg registers are big-endian — including the DMA address register, so both halves are written through `be32()`.
 
 **Layer 2 — `beer.gfx` namespace** (`kernel/gfx_natives.c`, `lib/gfx.beer`):
 - Natives registered at boot: `set-pixel!`, `fill-rect!`, `width`, `height`, `rgb`, `clear!`

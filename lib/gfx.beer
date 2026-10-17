@@ -26,8 +26,8 @@
 (defn line!
   "Draw a line from (x1,y1) to (x2,y2) using Bresenham's algorithm."
   [x1 y1 x2 y2 c]
-  (let [dx (Math/abs (- x2 x1))
-        dy (Math/abs (- y2 y1))
+  (let [dx (abs (- x2 x1))
+        dy (abs (- y2 y1))
         sx (if (< x1 x2) 1 -1)
         sy (if (< y1 y2) 1 -1)]
     (loop [x x1 y y1 err (- dx dy)]
@@ -71,7 +71,7 @@
 ;; A minimal ASCII font (space → ~, 95 glyphs). Each glyph is 8 rows of
 ;; 8 bits stored as a vector of integers. Bit 7 of each byte = leftmost pixel.
 
-(def ^:private font-data
+(def font-data
   [;; 0x20 space
    [0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00]
    ;; 0x21 !
@@ -263,7 +263,7 @@
    ;; 0x7E ~
    [0x76 0xDC 0x00 0x00 0x00 0x00 0x00 0x00]])
 
-(defn- draw-glyph! [x y glyph c]
+(defn draw-glyph! [x y glyph c]
   (loop [row 0]
     (when (< row 8)
       (let [bits (nth glyph row)]

@@ -128,11 +128,13 @@ void gfx_init_ramfb(void) {
     dma.length  = be32(sizeof(cfg));
     dma.address = be64((uint64_t)(uintptr_t)&cfg);
 
-    /* Trigger DMA: write 64-bit GPA of dma struct to FW_CFG_DMA_ADDR.
-     * RISC-V is little-endian; fw-cfg expects high word first. */
+    /* Trigger DMA: write 64-bit GPA of dma struct to FW_CFG_DMA_ADDR, high
+     * word first (the low-word write starts the transfer). The register is
+     * big-endian like every other fw-cfg field, so byte-swap each half —
+     * an unswapped address points QEMU at the wrong descriptor. */
     uint64_t dma_gpa = (uint64_t)(uintptr_t)&dma;
-    FW_CFG_DMA_HI = (uint32_t)(dma_gpa >> 32);
-    FW_CFG_DMA_LO = (uint32_t)(dma_gpa & 0xFFFFFFFFu);
+    FW_CFG_DMA_HI = be32((uint32_t)(dma_gpa >> 32));
+    FW_CFG_DMA_LO = be32((uint32_t)(dma_gpa & 0xFFFFFFFFu));
 
     /* QEMU processes the DMA synchronously; by the time the store completes
      * the ramfb is configured. Clear the framebuffer to black. */

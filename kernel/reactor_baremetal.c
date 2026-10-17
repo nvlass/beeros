@@ -20,13 +20,8 @@ void reactor_free(Reactor* r) {
     (void)r;
 }
 
-int reactor_add(Reactor* r, int fd, bool read, bool write, void* userdata) {
-    (void)r; (void)fd; (void)read; (void)write; (void)userdata;
-    return 0;
-}
-
-int reactor_remove(Reactor* r, int fd) {
-    (void)r; (void)fd;
+int reactor_set(Reactor* r, int fd, bool read, bool write) {
+    (void)r; (void)fd; (void)read; (void)write;
     return 0;
 }
 

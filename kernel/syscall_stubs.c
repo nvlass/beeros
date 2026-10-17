@@ -21,6 +21,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #include "uart.h"
 
 /* ── picolibc FILE callbacks ─────────────────────────────────────────── */
@@ -162,6 +163,17 @@ int stat(const char *path, struct stat *st) { (void)path; (void)st; errno = ENOS
 DIR *opendir(const char *name)       { (void)name; errno = ENOSYS; return NULL; }
 struct dirent *readdir(DIR *d)       { (void)d; errno = ENOSYS; return NULL; }
 int closedir(DIR *d)                 { (void)d; errno = ENOSYS; return -1; }
+
+/* stream_flush()'s blocking retry loop (src/io/stream.c) calls poll() to
+ * wait for a non-blocking fd to become writable again. No beeros stream
+ * is ever non-blocking (UART writes are synchronous), so this never runs
+ * in practice — report every fd ready rather than block, since nothing
+ * on bare metal would ever make one ready later. */
+int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
+    (void)timeout;
+    for (nfds_t i = 0; i < nfds; i++) fds[i].revents = fds[i].events;
+    return (int)nfds;
+}
 
 /* ── net/shell registration stubs (excluded from build) ─────────────── */
 

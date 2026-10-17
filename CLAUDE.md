@@ -51,9 +51,12 @@ beeros/
 │   ├── gfx.h / gfx.c         ← framebuffer HAL
 │   ├── gfx_natives.h / .c    ← beer.gfx namespace + lib/gfx.beer loader
 │   ├── blob_loader.h / .c    ← shared read→compile→run loader for embedded .beer libs
-│   └── repl_uart.c            ← REPL entry; boots core.beer, mem, then optional gfx
+│   ├── virtio_blk.h / .c     ← C virtio-blk driver (virtio-mmio, modern transport)
+│   ├── blk_natives.h / .c    ← beer.blk.native namespace + lib/blk.beer loader
+│   └── repl_uart.c            ← REPL entry; boots core.beer, mem, blk, then optional gfx
 ├── lib/
 │   ├── mem.beer       ← MMIO helpers + named MMIO constants
+│   ├── blk.beer       ← beer.blk: block-device maps, registry, error policy
 │   └── gfx.beer       ← beerlang drawing library
 └── Makefile
 ```
@@ -157,6 +160,25 @@ Also defines named MMIO constants: `uart0-*`, `fw-cfg-*`, `plic-base`, `ramfb-ba
 `plic_enable(irq, priority)` → sets priority register, enable bit, threshold=0, `csrs mie`.
 
 **`addr-of`:** dispatches on type. For a `ByteBuffer` (from `beer.bytes/alloc` — the preferred DMA buffer: mutable, not UTF-8-validated, not NUL-padded), returns `bytebuffer_data(v)`. For a `String`, returns `string_cstr(v)` — i.e. `&data[0]` of its inline byte buffer, computed by beerlang's own accessor (do *not* re-mirror the private `String` struct; it has a cached-`hash` field before `data[]`). Other values return 0.
+
+## Block devices (`beer.blk`)
+
+Interface and design: `docs/block-device.md`. A block device is a map with
+`:read!`/`:write!` `(lba n buf off)` over ByteBuffers, `:flush!`, and
+geometry; filesystems only ever see the map. Always built (no flag).
+
+- `kernel/virtio_blk.c` — C driver: probes all virtio-mmio slots (board
+  constants in `platform/<board>/hal/virtio_mmio.h`), needs the modern
+  transport (`-global virtio-mmio.force-legacy=false`, in `board.mk`), one
+  request in flight, polls for completion.
+- `beer.blk.native` — its natives; return `nil` or an error keyword.
+- `lib/blk.beer` — wraps them into device maps (throwing `ex-info`),
+  registry (`devices`, `device`, `register-device!`), `read-sectors`,
+  `write-sectors!`, `flush!`. Registers every probed device at boot.
+- A beerlang virtio-blk driver is planned as the default; the C one stays as
+  reference/fallback.
+
+Attach a disk: `make run BOARD=virt-riscv DISK=disk.img` (raw image).
 
 ## Graphics driver (`beer.gfx`)
 

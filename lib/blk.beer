@@ -1,0 +1,73 @@
+;; beer.blk — block devices (see docs/block-device.md)
+;;
+;; A block device is a map:
+;;   {:name "virtio0" :sector-size 512 :sectors n :read-only? false
+;;    :read!  (fn [lba n buf off] ...)   ; device -> ByteBuffer, nil or throws
+;;    :write! (fn [lba n buf off] ...)   ; ByteBuffer -> device
+;;    :flush! (fn [] ...)}               ; nil if the device has no cache
+;;
+;; Drivers only build these maps; everything above (partitions, tar, FAT)
+;; uses the map. Redefine any of this at the REPL to change behaviour.
+
+(ns beer.blk)
+
+;; ── registry ──────────────────────────────────────────────────────────────
+
+(def registry (atom {}))
+
+(defn register-device! [dev]
+  (swap! registry assoc (:name dev) dev)
+  dev)
+
+(defn device [name] (get @registry name))
+
+(defn devices [] (keys @registry))
+
+;; ── errors ────────────────────────────────────────────────────────────────
+
+(defn fail! [dev-name op lba n reason]
+  (throw (ex-info (str dev-name ": " (name op) " failed: " (name reason))
+                  {:device dev-name :op op :lba lba :n n :reason reason})))
+
+(defn check [dev-name op lba n result]
+  (when result (fail! dev-name op lba n result)))
+
+;; ── C virtio-blk driver (beer.blk.native) ─────────────────────────────────
+
+(defn native-virtio-device
+  "Block-device map over the C virtio-blk driver's device `id`."
+  [id]
+  (let [nm (str "virtio" id)]
+    {:name        nm
+     :driver      :virtio-c
+     :sector-size 512
+     :sectors     (beer.blk.native/sectors id)
+     :read-only?  (beer.blk.native/read-only? id)
+     :read!       (fn [lba n buf off]
+                    (check nm :read lba n (beer.blk.native/read! id lba n buf off)))
+     :write!      (fn [lba n buf off]
+                    (check nm :write lba n (beer.blk.native/write! id lba n buf off)))
+     :flush!      (when (beer.blk.native/can-flush? id)
+                    (fn [] (check nm :flush 0 0 (beer.blk.native/flush! id))))}))
+
+;; ── helpers for layers above (FS, tar, partitions) ────────────────────────
+
+(defn read-sectors
+  "Read n sectors starting at lba into a fresh ByteBuffer."
+  [dev lba n]
+  (let [buf (beer.bytes/alloc (* n (:sector-size dev)))]
+    ((:read! dev) lba n buf 0)
+    buf))
+
+(defn write-sectors!
+  "Write n sectors from buf (starting at byte off) to lba."
+  [dev lba n buf off]
+  ((:write! dev) lba n buf off))
+
+(defn flush! [dev]
+  (when-let [f (:flush! dev)] (f)))
+
+;; ── boot: register what the drivers found ─────────────────────────────────
+
+(doseq [i (range (beer.blk.native/count))]
+  (register-device! (native-virtio-device i)))

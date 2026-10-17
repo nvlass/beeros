@@ -88,7 +88,9 @@ KERNEL_SRCS = \
 	kernel/syscall_stubs.c \
 	kernel/libgcc_shim.c \
 	kernel/blob_loader.c \
-	kernel/mem_natives.c
+	kernel/mem_natives.c \
+	kernel/virtio_blk.c \
+	kernel/blk_natives.c
 
 ifdef BEEROS_GFX
 KERNEL_SRCS   += kernel/gfx.c kernel/gfx_natives.c
@@ -137,6 +139,9 @@ kernel/gfx_beer_blob.h: lib/gfx.beer
 kernel/mem_beer_blob.h: lib/mem.beer
 	xxd -i $< > $@
 
+kernel/blk_beer_blob.h: lib/blk.beer
+	xxd -i $< > $@
+
 # Fixed array name: xxd -i would derive it from the submodule path
 kernel/core_beer_blob.h: $(BEER_ROOT)/lib/core.beer
 	{ echo 'unsigned char core_beer[] = {'; xxd -i < $<; echo '};'; \
@@ -146,8 +151,11 @@ kernel/core_beer_blob.h: $(BEER_ROOT)/lib/core.beer
 
 all: _check_picolibc beeros.bin
 
+# DISK=path/to/image.img attaches a raw image as a virtio-blk device
+DISK_FLAGS = $(if $(DISK),-drive file=$(DISK),if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0)
+
 run: _check_picolibc beeros.elf
-	$(QEMU) $(QEMU_FLAGS) -kernel beeros.elf
+	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -kernel beeros.elf
 
 # run-gfx: opens a display window + REPL on stdio
 # Uses -display cocoa on macOS; change to -display gtk on Linux.
@@ -156,7 +164,7 @@ run-gfx: _check_picolibc kernel/gfx_beer_blob.h
 	$(MAKE) BOARD=$(BOARD) BEEROS_GFX=1
 	$(QEMU) -M virt -m 256M -bios none \
 	  -device ramfb -display $(DISPLAY_BACKEND) \
-	  -serial stdio \
+	  -serial stdio -global virtio-mmio.force-legacy=false $(DISK_FLAGS) \
 	  -kernel beeros.elf
 
 beeros.elf: $(BEER_ROOT)/include/beerlang.h $(OBJS)
@@ -172,6 +180,7 @@ disasm: beeros.elf
 $(BUILD_DIR)/kernel/gfx_natives.o: kernel/gfx_beer_blob.h
 $(BUILD_DIR)/kernel/mem_natives.o: kernel/mem_beer_blob.h
 $(BUILD_DIR)/kernel/repl_uart.o: kernel/core_beer_blob.h
+$(BUILD_DIR)/kernel/blk_natives.o: kernel/blk_beer_blob.h
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -182,4 +191,4 @@ $(BUILD_DIR)/%.o: %.S
 	$(AS) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf build/ beeros.elf beeros.bin kernel/gfx_beer_blob.h kernel/mem_beer_blob.h kernel/core_beer_blob.h
+	rm -rf build/ beeros.elf beeros.bin kernel/gfx_beer_blob.h kernel/mem_beer_blob.h kernel/core_beer_blob.h kernel/blk_beer_blob.h

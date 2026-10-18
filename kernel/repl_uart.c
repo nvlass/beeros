@@ -5,7 +5,7 @@
  * after the stack and BSS are set up.
  *
  * Boot: core.beer and the beeros libraries come from embedded blobs
- * (beer_load_blob). Interrupts: Ctrl-\, a serial BREAK or (while a form
+ * (beer_load_lib). Interrupts: Ctrl-\, a serial BREAK or (while a form
  * runs) Ctrl-C stop the form; see kernel/console.c.
  */
 
@@ -418,7 +418,7 @@ void beeros_main(void) {
     symbol_init();
     namespace_init_bare();   /* core.beer comes from the blob below, not a file */
     /* defn/ns/let/when/loop... are core.beer macros; mem.beer and gfx.beer need them */
-    beer_load_blob(core_beer, core_beer_len, "lib/core.beer", "beer.core");
+    beer_load_lib(core_beer, core_beer_len, "lib/core.beer", "beer.core");
     uart_puts("[beeros] core macros loaded (embedded lib/core.beer)\r\n");
 
     mem_register_natives();

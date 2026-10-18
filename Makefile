@@ -43,33 +43,15 @@ _check_picolibc:
 	  exit 1; }
 
 # ── beerlang submodule ─────────────────────────────────────────────────
-BEER_ROOT = beerlang
+BEER_ROOT := beerlang
 
 $(BEER_ROOT)/include/beerlang.h:
 	git submodule update --init $(BEER_ROOT)
 
-BEER_EXCLUDE = \
-	$(BEER_ROOT)/src/io/io_reactor.c \
-	$(BEER_ROOT)/src/io/reactor.c \
-	$(BEER_ROOT)/src/repl/main.c \
-	$(BEER_ROOT)/src/runtime/tcp.c \
-	$(BEER_ROOT)/src/runtime/udp.c \
-	$(BEER_ROOT)/src/runtime/shell.c
-
-BEER_SRCS = $(filter-out $(BEER_EXCLUDE), \
-	$(wildcard $(BEER_ROOT)/src/vm/*.c) \
-	$(wildcard $(BEER_ROOT)/src/types/*.c) \
-	$(wildcard $(BEER_ROOT)/src/memory/*.c) \
-	$(wildcard $(BEER_ROOT)/src/reader/*.c) \
-	$(wildcard $(BEER_ROOT)/src/compiler/*.c) \
-	$(wildcard $(BEER_ROOT)/src/runtime/*.c) \
-	$(wildcard $(BEER_ROOT)/src/scheduler/*.c) \
-	$(wildcard $(BEER_ROOT)/src/task/*.c) \
-	$(wildcard $(BEER_ROOT)/src/channel/*.c) \
-	$(wildcard $(BEER_ROOT)/src/io/*.c) \
-	$(wildcard $(BEER_ROOT)/src/lib/*.c) \
-	$(BEER_ROOT)/vendor/mini-gmp.c \
-	$(BEER_ROOT)/vendor/ulog.c)
+# beerlang's own source list and feature switches (docs/EMBEDDING.md
+# there): no fd readiness, so no reactor, sockets or subprocesses
+BEER_PLATFORM := none
+include $(BEER_ROOT)/beerlang.mk
 
 # ── platform + kernel sources ──────────────────────────────────────────
 PLATFORM_DIR  = platform/$(BOARD)
@@ -82,8 +64,6 @@ PLATFORM_SRCS = \
 	$(PLATFORM_DIR)/hal/trap.S
 
 KERNEL_SRCS = \
-	kernel/io_reactor_baremetal.c \
-	kernel/reactor_baremetal.c \
 	kernel/repl_uart.c \
 	kernel/syscall_stubs.c \
 	kernel/libgcc_shim.c \
@@ -99,7 +79,7 @@ KERNEL_SRCS   += kernel/gfx.c kernel/gfx_natives.c
 PLATFORM_SRCS += $(PLATFORM_DIR)/hal/gfx_ramfb.c
 endif
 
-ALL_SRCS = $(BEER_SRCS) $(PLATFORM_SRCS) $(KERNEL_SRCS)
+ALL_SRCS = $(BEER_SRCS) $(BEER_VENDOR_SRCS) $(PLATFORM_SRCS) $(KERNEL_SRCS)
 
 # ── compiler flags ─────────────────────────────────────────────────────
 BOARD_UPPER = $(shell echo $(BOARD) | tr 'a-z-' 'A-Z_')
@@ -110,8 +90,7 @@ CFLAGS = \
 	-ffunction-sections -fdata-sections \
 	-Wall -Wextra \
 	--specs=picolibc.specs \
-	-I$(BEER_ROOT)/include \
-	-I$(BEER_ROOT)/vendor \
+	$(BEER_CFLAGS) \
 	-I$(PLATFORM_DIR)/hal \
 	-Ikernel \
 	-D_GNU_SOURCE \

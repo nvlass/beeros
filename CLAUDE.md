@@ -10,35 +10,21 @@ Bare-metal OS layer for running the Beerlang REPL directly on embedded hardware 
 
 ## Architecture
 
-beerlang's POSIX-specific files are replaced by beeros equivalents at link time:
+beerlang is built from its own `beerlang.mk` (sources, flags, feature
+switches; `beerlang/docs/EMBEDDING.md`) with `BEER_PLATFORM := none`: a
+stub I/O reactor, no `beer.tcp`/`beer.udp`/`beer.shell`. beeros adds only
+`kernel/repl_uart.c` (the REPL, instead of `src/repl/main.c`) and the libc
+stubs in `kernel/syscall_stubs.c` (`usleep`, `poll`, `_write`, ...). Rule
+from EMBEDDING.md: configure, don't patch — if a hook is missing, ask in
+beerlang's `TODO.md`.
 
-| Replaced file                  | beeros replacement              |
-|--------------------------------|---------------------------------|
-| `beerlang/src/io/io_reactor.c` | `kernel/io_reactor_baremetal.c` |
-| `beerlang/src/io/reactor.c`    | `kernel/reactor_baremetal.c`    |
-| `beerlang/src/repl/main.c`     | `kernel/repl_uart.c`            |
-
-Everything else (VM, compiler, GC, types, channels, actors, stdlib) compiles unchanged.
-
-**Embedded `.beer` libraries.** There is no filesystem, so beerlang's own
-`core_register_macros()` can't `fopen` `lib/core.beer` (it prints a harmless
-`NOTE: ... not found`). beeros embeds `beerlang/lib/core.beer` via `xxd` and
-loads it into `beer.core` right after `namespace_init()` — it defines `defn`,
-`ns`, `let` (destructuring), `when`, `loop`, `->` etc., which `lib/mem.beer` and
-`lib/gfx.beer` need. Boot uses `namespace_init_bare()` (no file search, no NOTE).
-All of them go through `beer_load_blob()` (`kernel/blob_loader.c`),
-which restores both the registry's current ns and `beer.core/*ns*` afterwards
-(they must agree, or `*ns*` reads stale inside library code).
-Every function compiled at boot or at the REPL gets `function_set_ns_name()` so
-its free symbols resolve in the defining namespace (beerlang requires this since
-`232fd28`). The reader has no `^` metadata support and there is no `defn-` or
-Java interop (`Math/abs`) — keep `lib/*.beer` to plain beerlang.
-
-**Reactor shims.** `kernel/reactor_baremetal.c` / `io_reactor_baremetal.c` are
-no-op stubs of beerlang's `reactor.h` (4 fns) and `io_reactor.h` (7 fns). No
-beeros task ever waits on an fd, so `io_reactor_waiting()` returns 0 and the
-scheduler never calls into them. If beerlang changes those headers again, mirror
-`beerlang/wasm/io_reactor_stub.c`.
+**Embedded `.beer` libraries.** `beerlang/lib/core.beer` and `lib/*.beer`
+are embedded with `xxd`. Boot uses `namespace_init_bare()` (no
+`lib/core.beer` search), then `beer_load_lib()` (`kernel/blob_loader.c`)
+runs each through beerlang's `core_load_source_ns` (home namespaces,
+`*ns*` restore, compiled code kept alive) and records the namespace in
+`*loaded-libs*`, so `require` doesn't look for a file. There is no `defn-`
+or Java interop (`Math/abs`) — keep `lib/*.beer` to plain beerlang.
 
 ## Directory structure
 

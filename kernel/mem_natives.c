@@ -290,5 +290,5 @@ void mem_register_natives(void) {
 /* ── load embedded lib/mem.beer ─────────────────────────────────────────── */
 
 void mem_load_library(void) {
-    beer_load_blob(lib_mem_beer, lib_mem_beer_len, "lib/mem.beer", NULL);
+    beer_load_lib(lib_mem_beer, lib_mem_beer_len, "lib/mem.beer", "beer.mem");
 }

@@ -152,5 +152,5 @@ void gfx_register_natives(void) {
 /* ── load embedded lib/gfx.beer ─────────────────────────────────────────── */
 
 void gfx_load_library(void) {
-    beer_load_blob(lib_gfx_beer, lib_gfx_beer_len, "lib/gfx.beer", NULL);
+    beer_load_lib(lib_gfx_beer, lib_gfx_beer_len, "lib/gfx.beer", "beer.gfx");
 }

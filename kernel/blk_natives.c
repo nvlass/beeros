@@ -124,5 +124,5 @@ void blk_register_natives(void) {
 }
 
 void blk_load_library(void) {
-    beer_load_blob(lib_blk_beer, lib_blk_beer_len, "lib/blk.beer", NULL);
+    beer_load_lib(lib_blk_beer, lib_blk_beer_len, "lib/blk.beer", "beer.blk");
 }

@@ -383,8 +383,6 @@
               *err* out
               beer.tty/*tty* (assoc (tty t) :write! (fn [s] (print s)))]
       (println "beeros terminal REPL")
-      ;; Only the two catches: beerlang's exception handler stack is small
-      ;; (16 entries) and every try level of the forms run here counts.
       (loop [n 1]
         (reset! busy false)
         (try

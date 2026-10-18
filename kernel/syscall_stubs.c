@@ -177,8 +177,3 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     return (int)nfds;
 }
 
-/* ── net/shell registration stubs (excluded from build) ─────────────── */
-
-void core_register_tcp(void)   {}
-void core_register_udp(void)   {}
-void core_register_shell(void) {}

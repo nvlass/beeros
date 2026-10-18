@@ -216,6 +216,11 @@
 
 (def undo (motion (fn [x] (b/undo x))))
 
+(defn universal-argument
+  "C-u: the next command gets an argument (:arg in the editor state)."
+  [ed]
+  (message (assoc ed :arg 4 :this :arg) "C-u-"))
+
 (defn keyboard-quit [ed] (message (update-buf ed (fn [x] (assoc x :mark nil))) "Quit"))
 
 ;; ── search ────────────────────────────────────────────────────────────────
@@ -258,13 +263,18 @@
   (let [x (buf ed) p (b/sexp-before x)]
     (when p (b/text-between x p (b/point x)))))
 
-(defn eval-last-sexp [ed]
+(defn eval-last-sexp
+  "Evaluate the form before point; the value goes to the echo area, or
+  into the buffer at point after C-u."
+  [ed]
   (let [text (last-sexp ed)]
     (if (nil? text)
       (message ed "No sexp before point")
       (let [[v out] (eval-string text)
             first-out (first (filter (fn [l] (not= (s/trim l) "")) (s/split out "\n")))]
-        (message ed (str (if first-out (str (s/trim first-out) "  ") "") "=> " v))))))
+        (if (:arg ed)
+          (update-buf ed (fn [x] (b/insert (b/snapshot x) (str " " v))))
+          (message ed (str (if first-out (str (s/trim first-out) "  ") "") "=> " v)))))))
 
 (defn eval-print-last-sexp [ed]
   (let [text (last-sexp ed)]
@@ -363,7 +373,8 @@
          "RET" newline "C-o" open-line "TAB" indent "C-k" kill-line "M-d" kill-word
          "M-DEL" backward-kill-word "C-SPC" set-mark "C-@" set-mark "C-w" kill-region
          "M-w" copy-region "C-y" yank "C-/" undo "C-_" undo "C--" undo "C-g" keyboard-quit
-         "C-s" isearch-forward "C-j" eval-print-last-sexp "M-:" eval-expression}))
+         "C-s" isearch-forward "C-j" eval-print-last-sexp "M-:" eval-expression
+         "C-u" universal-argument}))
 
 (defn lookup
   "The command for key k (reading more keys after C-x or ESC), or a
@@ -384,13 +395,14 @@
       (let [ed (redisplay! (assoc ed :size (beer.tty/size)))
             k  (read-key)
             cmd (lookup k)
-            ed (assoc ed :msg "" :this nil)
+            ed (assoc ed :msg (if (:arg ed) "C-u-" "") :this nil)
             ed (try
                  (cond (vector? cmd) (self-insert ed (second cmd))
                        cmd (cmd ed)
                        :else (message ed (str k " is undefined")))
                  (catch e (message ed (str "Error: " (if (map? e) (:message e) (pr-str e))))))]
-        (recur (assoc ed :last (:this ed)))))))
+        (recur (let [ed (assoc ed :last (:this ed))]
+                 (if (= (:this ed) :arg) ed (dissoc ed :arg))))))))
 
 (def scratch-text
   ";; This buffer is for text that is not saved, and for beerlang evaluation.

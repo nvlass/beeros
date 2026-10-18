@@ -304,6 +304,8 @@ Both load the ELF via `-kernel beeros.elf` and map UART0 to stdio (`-serial mon:
 
 ## Roadmap
 
+Near-term work items: `TODO.md` (browsable docs, ext2 writes, a graphics editor).
+
 1. **Filesystem support** — block device driver (virtio-blk under QEMU) + a filesystem
    layer so beeros can load code/assets from storage instead of embedded blobs.
 2. **"Does it run Doom?"** — after filesystem *and* a keyboard/mouse input driver

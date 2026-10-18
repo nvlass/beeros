@@ -25,7 +25,8 @@ ext2 disk is read-only so far, so saving there reports an error.
 | C-/ (C-_, C-x u) | undo |
 | C-s | incremental search (C-s next, DEL back, RET stop, C-g return) |
 | RET, C-o, TAB | newline with indentation, open line, two spaces |
-| C-x C-e, C-j, M-: | eval the form before point (value in the echo area / inserted), eval a typed expression |
+| C-x C-e, C-u C-x C-e, C-j, M-: | eval the form before point: value in the echo area / inserted at point / inserted on a new line; eval a typed expression |
+| C-u | universal argument for the next command |
 | C-x C-f, C-x C-s, C-x C-w | find file, save, write to another file |
 | C-x b, C-x k, C-x C-b | switch to / kill / list buffers |
 | C-l, C-g, C-x C-c | recenter, quit the current command, exit |

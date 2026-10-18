@@ -339,14 +339,10 @@
   t)
 
 (defn read-key
-  "Next keystroke from the beer.input keyboards (yields while none)."
+  "Next keystroke from the beer.input keyboards (waits for one)."
   []
   (loop []
-    (let [ev (beer.input/poll-event)
-          k  (when ev (beer.tty/event->keystroke ev))]
-      (cond k k
-            ev (recur)
-            :else (do (sleep render-idle-ms) (recur))))))
+    (or (beer.tty/event->keystroke (beer.input/wait-event)) (recur))))
 
 (defn tty
   "A beer.tty for the terminal: keys from beer.input, text to the term."

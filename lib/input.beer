@@ -12,7 +12,9 @@
 
 (def queue-max 256)
 
-(def queue    (atom []))     ; oldest first; oldest dropped when full
+;; Backends offer! (never blocks: an event that doesn't fit is dropped);
+;; consumers poll! or take with <!
+(def queue    (chan queue-max))
 (def held     (atom #{}))    ; keys and buttons currently down
 (def registry (atom {}))     ; device name -> info map from its backend
 
@@ -46,28 +48,20 @@
       (let [k (if (= t :key) (:key ev) (:button ev))]
         (swap! held (fn [h] (if (:down? ev) (conj h k) (disj h k))))))
     (when (not (and f (f ev)))
-      (swap! queue (fn [q]
-                     (let [q (conj q ev)]
-                       (if (> (count q) queue-max) (subvec q 1) q))))))
+      (offer! queue ev)))
   nil)
 
 (defn poll-event
   "Next event, or nil if none is waiting. Never blocks."
   []
-  (loop []
-    (let [q @queue]
-      (cond (empty? q) nil
-            (compare-and-set! queue q (subvec q 1)) (first q)
-            :else (recur)))))
+  (poll! queue))
 
 (defn wait-event
-  "Next event; yields to other tasks (the drivers) until one arrives."
+  "Next event; the task waits (other tasks run) until one arrives."
   []
-  (loop []
-    (let [ev (poll-event)]
-      (if ev ev (do (yield) (recur))))))
+  (<! queue))
 
-(defn clear! [] (reset! queue []) nil)
+(defn clear! [] (loop [] (when (poll! queue) (recur))) nil)
 
 (defn down? [k] (contains? @held k))
 

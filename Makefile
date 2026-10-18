@@ -212,13 +212,18 @@ $(BUILD_DIR)/kernel/repl_uart.o: kernel/core_beer_blob.h
 $(BUILD_DIR)/kernel/blk_natives.o: kernel/blk_beer_blob.h
 $(BUILD_DIR)/kernel/beer_libs.o: $(BEER_LIB_BLOBS)
 
+# -MMD: each object also depends on the headers it included (a .d file
+# next to it), so a beerlang header change rebuilds what uses it;
+# otherwise objects keep stale struct layouts
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/%.o: %.S
 	@mkdir -p $(dir $@)
-	$(AS) $(CFLAGS) -c $< -o $@
+	$(AS) $(CFLAGS) -MMD -MP -c $< -o $@
+
+-include $(OBJS:.o=.d)
 
 clean:
 	rm -rf build/ beeros.elf beeros.bin kernel/*_beer_blob.h

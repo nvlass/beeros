@@ -79,14 +79,17 @@ built-in reader, so a broken edit at the REPL can't lock you out;
 `(beer.lineedit/enable!)` turns the editor back on.
 
 Escape sequences the editor emits (all a terminal emulator needs for it):
-CR, `CSI K` (erase to end of line), `CSI n D` (cursor left), `CSI 7m` /
-`CSI 0m` (inverse on/off), `CSI H` + `CSI 2J` (clear).
+CR, CR LF, `CSI n A` / `CSI n C` (cursor up / right), `CSI J` (erase
+below), `CSI 7m` / `CSI 0m` (inverse on/off), `CSI H` + `CSI 2J` (clear).
 
-Not yet: horizontal scrolling for lines wider than the terminal, C-r
-search, persistent history (needs ext2 writes: `/var/history`). Slow on
-long lines: every key redraws the whole line (fine when typing, but a
-pasted 100-character line takes about a second); redrawing only from the
-cursor would fix it.
+Lines wider than the tty wrap over several rows: each redraw goes up to
+the prompt's row (`CSI n A`), rewrites, and erases below (`CSI J`). The
+width is the tty's `:cols` (the term knows it; serial assumes
+`@beer.tty/serial-cols`, 80, since we don't ask the terminal yet).
+
+Not yet: C-r search, persistent history (needs ext2 writes:
+`/var/history`). Every key redraws the whole line; redrawing only from
+the cursor would make long lines cheaper (the term draws ~8 chars/ms).
 
 ## Terminal emulator (`beer.term`)
 

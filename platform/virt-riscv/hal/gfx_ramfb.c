@@ -31,7 +31,8 @@
 #define FW_CFG_FILE_DIR   0x0019
 
 /* ── framebuffer parameters ───────────────────────────────────────────── */
-#define FB_ADDR      0x84000000UL   /* 64 MB into RAM, after kernel */
+extern char __fb_start[];      /* reserved by virt-riscv.ld, outside the heap */
+#define FB_ADDR      ((uintptr_t)__fb_start)
 #define FB_WIDTH     1280
 #define FB_HEIGHT    720
 #define FB_STRIDE    (FB_WIDTH * 4)

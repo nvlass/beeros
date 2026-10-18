@@ -1,6 +1,6 @@
 ;; beer.tty — terminals: a keystroke source plus an ANSI/VT100 text sink
 ;;
-;; A tty is a map {:name :read-key :write!}. :read-key returns the next
+;; A tty is a map {:name :read-key :write! :cols}. :read-key returns the next
 ;; keystroke, yielding while there is none:
 ;;   {:char "a"}                      text (any UTF-8 character)
 ;;   {:key :left :mods #{}}           editing/function keys, :enter :tab :backspace ...
@@ -170,10 +170,15 @@
           k (if b (decode b) (keyboard-keystroke))]
       (if k k (do (yield) (recur))))))
 
+;; The serial terminal's width, for the line editor's wrapping (we can't
+;; ask the terminal yet): (reset! beer.tty/serial-cols 120)
+(def serial-cols (atom 80))
+
 (def serial
   {:name     "serial0"
    :read-key serial-read-key
-   :write!   (fn [s] (print s))})
+   :write!   (fn [s] (print s))
+   :cols     (fn [] @serial-cols)})
 
 ;; The tty of the running task: the serial one unless a REPL binds it
 ;; (binding [beer.tty/*tty* (beer.term/tty t)] ...); spawned tasks inherit it.

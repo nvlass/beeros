@@ -66,6 +66,7 @@ PLATFORM_SRCS = \
 KERNEL_SRCS = \
 	kernel/repl_uart.c \
 	kernel/syscall_stubs.c \
+	kernel/malloc.c \
 	kernel/libgcc_shim.c \
 	kernel/blob_loader.c \
 	kernel/mem_natives.c \

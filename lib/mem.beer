@@ -85,4 +85,4 @@
 (def plic-base    0x0C000000)
 
 ;; ramfb framebuffer (configured by beer.gfx when loaded)
-(def ramfb-base   0x84000000)
+(def ramfb-base   0x8FBC0000)   ; __fb_start in virt-riscv.ld

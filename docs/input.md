@@ -40,7 +40,8 @@ default; `nil` for keys that don't type). Unknown keys come through as
 
 Events go into a bounded queue (oldest dropped when full) rather than a
 channel: beerlang channels have no non-blocking put, and a backend must
-never block because nobody is reading. `down?` comes from a held-keys set
+never block because nobody is reading. The virtio-input driver keeps 64
+buffers posted per device; QEMU drops events when none is free. `down?` comes from a held-keys set
 updated on every key/button event, so a game can poll state instead of
 consuming events.
 

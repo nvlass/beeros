@@ -62,7 +62,9 @@ SECTIONS {
     _end        = .;
     __heap_start = .;
 
-    /* 256 KiB stack at the top of RAM; heap fills the gap */
+    /* From the top of RAM: 256 KiB stack, then 4 MiB for the ramfb
+     * framebuffer (1280x720x4); the heap fills the gap below them */
     _stack_top  = ORIGIN(RAM) + LENGTH(RAM);
-    __heap_end  = _stack_top - 0x40000;   /* leave 256 KiB for the stack */
+    __fb_start  = _stack_top - 0x40000 - 0x400000;
+    __heap_end  = __fb_start;
 }

@@ -271,7 +271,7 @@ Two-layer architecture, no beerlang submodule changes:
 **Layer 1 — C HAL** (`kernel/gfx.h`, `kernel/gfx.c`, `platform/<board>/hal/gfx_ramfb.c`):
 - `gfx_init(width, height, fb_addr)` — called by platform once the framebuffer address is known
 - `gfx_set_pixel(x, y, color)` / `gfx_fill_rect(x, y, w, h, color)` — XRGB8888 format
-- virt-riscv uses QEMU's `ramfb` device: one fw-cfg DMA handshake at boot maps the buffer to `0x84000000`. All fw-cfg registers are big-endian — including the DMA address register, so both halves are written through `be32()`.
+- virt-riscv uses QEMU's `ramfb` device: one fw-cfg DMA handshake at boot maps the buffer to `__fb_start` (`0x8FBC0000`, 4 MiB reserved below the stack by `virt-riscv.ld`, outside the heap). All fw-cfg registers are big-endian — including the DMA address register, so both halves are written through `be32()`.
 
 **Layer 2 — `beer.gfx` namespace** (`kernel/gfx_natives.c`, `lib/gfx.beer`):
 - Natives registered at boot: `set-pixel!`, `fill-rect!`, `width`, `height`, `rgb`, `clear!`,

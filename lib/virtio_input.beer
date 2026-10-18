@@ -8,7 +8,7 @@
 (ns beer.virtio-input)
 
 (def device-input 18)
-(def qsize        16)
+(def qsize        64)   ; event buffers; QEMU drops events when none is posted
 (def ev-size      8)
 
 ;; config space (virtio 1.x §5.8.4): select u8, subsel u8, size u8, pad, union at 8

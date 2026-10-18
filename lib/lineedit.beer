@@ -80,20 +80,46 @@
 
 ;; ── rendering ─────────────────────────────────────────────────────────────
 
+(defn cols
+  "Width of the tty: its :cols (a number or a fn), else 80."
+  [tty]
+  (let [c (:cols tty)]
+    (cond (number? c) c
+          (fn? c) (c)
+          :else 80)))
+
 (defn render!
   "Redraw prompt + line, highlight the opener matching a closer just
-  before the cursor, leave the cursor at :pos."
+  before the cursor, leave the cursor at :pos. Lines wider than the tty
+  wrap onto more rows: go up to the prompt's row (:crow, the cursor's row
+  last time), rewrite, erase below. Returns st with the new :crow."
   [st]
   (let [buf  (:buf st)
         pos  (:pos st)
+        w    (cols (:tty st))
         hl   (when (and (not (:final? st)) (> pos 0) (get closers (nth buf (dec pos))))
                (match-before buf (dec pos)))
         line (if hl
                (str (join (subvec buf 0 hl)) csi "7m" (nth buf hl) csi "0m"
                     (join (subvec buf (inc hl))))
                (join buf))
-        back (- (count buf) pos)]
-    (out! st "\r" (:prompt st) line csi "K" (if (> back 0) (str csi back "D") ""))))
+        plen (count (:prompt st))
+        end  (+ plen (count buf))
+        at   (+ plen pos)
+        ;; text ending exactly at the right edge leaves the cursor waiting
+        ;; to wrap; a CR LF puts it at the start of the next row
+        edge (and (> end 0) (= 0 (rem end w)))
+        erow (quot end w)
+        trow (quot at w)
+        up   (- erow trow)
+        crow (or (:crow st) 0)]
+    (out! st
+          (if (> crow 0) (str csi crow "A") "")
+          "\r" (:prompt st) line csi "J"
+          (if edge "\r\n" "")
+          (if (> up 0) (str csi up "A") "")
+          "\r" (if (> (rem at w) 0) (str csi (rem at w) "C") ""))
+    (assoc st :crow trow)))
 
 ;; ── words and symbols ─────────────────────────────────────────────────────
 
@@ -154,7 +180,7 @@
         (if (and (empty? ins) (= (:last st) :tab))
           (do (out! st "\r\n" (beer.string/join "  " (take 60 cands))
                     (if (> (count cands) 60) (str "  ... (" (count cands) ")") "") "\r\n")
-              st)
+              (assoc st :crow 0))
           (assoc st :buf (vec (concat (subvec buf 0 pos) ins (subvec buf pos)))
                     :pos (+ pos (count ins))))))))
 
@@ -220,24 +246,28 @@
       (or (plain :up) (ctrl :p))    (history-move st -1)
       (or (plain :down) (ctrl :n))  (history-move st 1)
       (plain :tab)                  (complete st)
-      (ctrl :l)                     (do (out! st csi "H" csi "2J") st)
+      (ctrl :l)                     (do (out! st csi "H" csi "2J") (assoc st :crow 0))
       :else                         st)))
 
 (defn read-line
   "Edit one line after prompt. Returns the string, or nil on C-c."
   ([prompt] (read-line beer.tty/*tty* prompt))
   ([tty prompt]
-  (let [st0 {:tty tty :prompt prompt :buf [] :pos 0 :hist nil :saved [] :last nil}]
-    (render! st0)
-    (loop [st st0]
+  (let [st0 {:tty tty :prompt prompt :buf [] :pos 0 :hist nil :saved [] :last nil :crow 0}]
+    (loop [st (render! st0)]
       (let [k  ((:read-key tty))
-            r  (handle st k)]
+            r  (handle st k)
+            ;; final draw with the cursor at the end, then a new line
+            finish! (fn [tail]
+                      (let [n (count (:buf st))
+                            w (cols tty)
+                            end (+ (count (:prompt st)) n)]
+                        (render! (assoc st :final? true :pos n))
+                        (out! st tail (if (and (= tail "") (> end 0) (= 0 (rem end w))) "" "\r\n"))))]
         (cond
-          (:done r)   (do (render! (assoc st :final? true)) (out! st "\r\n") (:done r))
-          (:cancel r) (do (out! st "^C\r\n") nil)
-          :else       (let [r (assoc r :last (:key k))]
-                        (render! r)
-                        (recur r))))))))
+          (:done r)   (do (finish! "") (:done r))
+          (:cancel r) (do (finish! "^C") nil)
+          :else       (recur (render! (assoc r :last (:key k))))))))))
 
 (defn remember! [s]
   (let [line (beer.string/trim (beer.string/replace s "\n" " "))]

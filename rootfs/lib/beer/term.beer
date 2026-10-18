@@ -351,7 +351,7 @@
 (defn tty
   "A beer.tty for the terminal: keys from beer.input, text to the term."
   [t]
-  {:name "term" :read-key read-key :write! (fn [s] (write! t s))})
+  {:name "term" :read-key read-key :write! (fn [s] (write! t s)) :cols (:cols @t)})
 
 ;; ── a REPL on the terminal ────────────────────────────────────────────────
 

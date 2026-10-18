@@ -383,22 +383,19 @@
               *err* out
               beer.tty/*tty* (assoc (tty t) :write! (fn [s] (print s)))]
       (println "beeros terminal REPL")
-      (try
-        (loop [n 1]
-          (try
-            (let [text (beer.lineedit/read-form (str *ns* ":" n "> "))]
-              (reset! busy true)
-              (doseq [form (read-all text)]
-                (println (str "=> " (pr-str (eval form))))))
-            (catch :interrupt e
-              (println (str esc "[0m" esc "[?25h" "\r\n[beeros] interrupted")))
-            (catch e (println (error-text e)))
-            (finally (reset! busy false)))
-          (recur (inc n)))
-        (finally
-          (reset! beer.tty/keyboard-interrupt nil)
-          (reset! beer.tty/use-keyboard? true)
-          (beer.tty/release-output! slot))))))
+      ;; Only the two catches: beerlang's exception handler stack is small
+      ;; (16 entries) and every try level of the forms run here counts.
+      (loop [n 1]
+        (reset! busy false)
+        (try
+          (let [text (beer.lineedit/read-form (str *ns* ":" n "> "))]
+            (reset! busy true)
+            (doseq [form (read-all text)]
+              (println (str "=> " (pr-str (eval form))))))
+          (catch :interrupt e
+            (println (str esc "[0m" esc "[?25h" "\r\n[beeros] interrupted")))
+          (catch e (println (error-text e))))
+        (recur (inc n))))))
 
 (defn start-repl!
   "A full-screen terminal with a REPL; returns the term."

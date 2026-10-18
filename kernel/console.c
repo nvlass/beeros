@@ -15,9 +15,9 @@
 #include <string.h>
 
 #include "console.h"
-#include "scheduler.h"
-#include "task.h"
 #include "bstring.h"
+#include "stream.h"
+#include "vector.h"
 #include "uart.h"
 #include "namespace.h"
 #include "native.h"
@@ -99,30 +99,25 @@ static Value native_ctrl_c_get(VM* vm, int argc, Value* argv) {
     return (ctrl_c_interrupts && !reading) ? VALUE_TRUE : VALUE_FALSE;
 }
 
-/* ── per-task output capture ───────────────────────────────────────────── */
+/* ── capture streams ───────────────────────────────────────────────────── */
 
-/* A task that called capture-output! has its stdout/stderr (print, printf,
- * VM errors) collected here instead of going to the UART; another task
- * drains it with take-output. Keyed by the Task, retained while captured
- * so the pointer can't be reused. LF becomes CR LF, as on the UART. */
+/* (capture-stream) is an output stream whose bytes are kept in a buffer
+ * instead of going anywhere; another task drains it with take-output. A
+ * REPL binds *out* to one and its terminal draws what arrives. The streams
+ * use fds CAPTURE_FD0.. that only beeros's write() knows. LF becomes
+ * CR LF, as on the UART. */
 
 #define CAPTURES    8
+#define CAPTURE_FD0 3
 #define CAPTURE_MAX (64 * 1024)  /* beyond this, output is dropped */
 
 typedef struct {
-    Task*  task;
+    bool   used;
     char*  buf;
     size_t len, cap;
 } Capture;
 
 static Capture captures[CAPTURES];
-
-static Capture* capture_for(Task* t) {
-    if (!t) return NULL;
-    for (int i = 0; i < CAPTURES; i++)
-        if (captures[i].task == t) return &captures[i];
-    return NULL;
-}
 
 static void capture_put(Capture* c, char ch) {
     if (c->len >= c->cap) {
@@ -136,34 +131,37 @@ static void capture_put(Capture* c, char ch) {
 }
 
 void console_write(const char* s, size_t n) {
-    Capture* c = global_scheduler ? capture_for(global_scheduler->current) : NULL;
     for (size_t i = 0; i < n; i++) {
-        if (c) {
-            if (s[i] == '\n') capture_put(c, '\r');
-            capture_put(c, s[i]);
-        } else {
-            if (s[i] == '\n') uart_putc('\r');
-            uart_putc(s[i]);
-        }
+        if (s[i] == '\n') uart_putc('\r');
+        uart_putc(s[i]);
     }
 }
 
-/* (beer.tty/capture-output!) => slot: this task's output goes to the slot */
-static Value native_capture_output(VM* vm, int argc, Value* argv) {
+int console_capture_write(int fd, const char* s, size_t n) {
+    int i = fd - CAPTURE_FD0;
+    if (i < 0 || i >= CAPTURES || !captures[i].used) return -1;
+    for (size_t k = 0; k < n; k++) {
+        if (s[k] == '\n') capture_put(&captures[i], '\r');
+        capture_put(&captures[i], s[k]);
+    }
+    return (int)n;
+}
+
+/* (beer.tty/capture-stream) => [stream slot] */
+static Value native_capture_stream(VM* vm, int argc, Value* argv) {
     (void)argc; (void)argv;
-    Task* t = global_scheduler ? global_scheduler->current : NULL;
-    if (!t) { vm_error(vm, "capture-output!: not in a task"); return VALUE_NIL; }
-    Capture* c = capture_for(t);
-    if (c) return make_fixnum(c - captures);
     for (int i = 0; i < CAPTURES; i++) {
-        if (!captures[i].task) {
-            object_retain(tag_pointer(t));
-            captures[i].task = t;
+        if (!captures[i].used) {
+            captures[i].used = true;
             captures[i].len = 0;
-            return make_fixnum(i);
+            Value st = stream_from_fd(CAPTURE_FD0 + i, false, true, false, STREAM_STDOUT);
+            Value items[2] = { st, make_fixnum(i) };
+            Value v = vector_from_array(items, 2);
+            object_release(st);
+            return v;
         }
     }
-    vm_error(vm, "capture-output!: no free slot");
+    vm_error(vm, "capture-stream: no free slot");
     return VALUE_NIL;
 }
 
@@ -171,7 +169,7 @@ static Capture* slot_arg(VM* vm, const char* who, int argc, Value* argv) {
     if (argc != 1 || !is_fixnum(argv[0]) || untag_fixnum(argv[0]) < 0 ||
         untag_fixnum(argv[0]) >= CAPTURES) {
         char msg[80];
-        snprintf(msg, sizeof msg, "%s: takes a slot from capture-output!", who);
+        snprintf(msg, sizeof msg, "%s: takes a slot from capture-stream", who);
         vm_error(vm, msg);
         return NULL;
     }
@@ -202,14 +200,12 @@ static Value native_take_output(VM* vm, int argc, Value* argv) {
     return s;
 }
 
-/* (beer.tty/release-output! slot) — the task's output goes to the UART again */
+/* (beer.tty/release-output! slot) — free the slot; its stream then fails */
 static Value native_release_output(VM* vm, int argc, Value* argv) {
     Capture* c = slot_arg(vm, "release-output!", argc, argv);
-    if (!c || !c->task) return VALUE_NIL;
-    Task* t = c->task;
-    c->task = NULL;
+    if (!c) return VALUE_NIL;
+    c->used = false;
     c->len = 0;
-    object_release(tag_pointer(t));
     return VALUE_NIL;
 }
 
@@ -224,7 +220,7 @@ void console_register_natives(void) {
     reg(ns, "uart-byte",          native_uart_byte);
     reg(ns, "ctrl-c-interrupts!", native_ctrl_c_set);
     reg(ns, "ctrl-c-interrupts?", native_ctrl_c_get);
-    reg(ns, "capture-output!",    native_capture_output);
+    reg(ns, "capture-stream",     native_capture_stream);
     reg(ns, "take-output",        native_take_output);
     reg(ns, "release-output!",    native_release_output);
 }

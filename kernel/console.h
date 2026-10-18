@@ -22,12 +22,14 @@ int console_getc_nonblock(char* c);
  * interrupt */
 void console_set_reading(bool reading);
 
-/* stdout/stderr bytes: to the UART (LF as CR LF), or to the capture of
- * the running task if it called capture-output! */
+/* stdout/stderr bytes to the UART, LF as CR LF */
 void console_write(const char* s, size_t n);
 
+/* write() on a capture-stream fd: buffer the bytes; -1 if fd isn't one */
+int console_capture_write(int fd, const char* s, size_t n);
+
 /* beer.tty natives: uart-byte, ctrl-c-interrupts!, ctrl-c-interrupts?,
- * capture-output!, take-output, release-output! */
+ * capture-stream, take-output, release-output! */
 void console_register_natives(void);
 
 #endif

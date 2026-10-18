@@ -19,7 +19,7 @@
 (def bin-path (atom ["/bin"]))
 (def lib-path ["/lib/"])          ; *load-path* entries ahead of the packages
 
-(def *args* [])                   ; arguments of the script exec runs
+(def ^:dynamic *args* [])         ; arguments of the script exec runs
 
 (defn tars
   "Paths of the package tars on pkg-path, in order."
@@ -115,9 +115,7 @@
                      @bin-path)]
     (when (nil? script)
       (throw (ex-info (str "pkg: no " nm " on " (pr-str @bin-path)) {:name nm :reason :not-found})))
-    (let [saved *args* cur *ns*]
-      (def beer.pkg/*args* (vec args))
-      (try (load-file script)
-           (finally (def beer.pkg/*args* saved) (in-ns cur))))))
+    (binding [*args* (vec args)]
+      (load-file script))))
 
 (when (not (empty? @beer.fs/mount-table)) (rescan!))

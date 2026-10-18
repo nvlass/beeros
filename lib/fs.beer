@@ -167,10 +167,8 @@
 
 (defn run-init! []
   (when (and (not (empty? @mount-table)) (exists? init-file))
-    (let [saved *ns*]                      ; load-file leaves its (ns ...) current
-      (try
-        (load-file init-file)
-        (catch e (println (str "[beeros] " (:message e))))
-        (finally (in-ns saved))))))
+    (try
+      (load-file init-file)
+      (catch e (println (str "[beeros] " (:message e)))))))
 
 (auto-mount!)

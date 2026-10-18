@@ -27,7 +27,7 @@
 
 /* ── picolibc FILE callbacks ─────────────────────────────────────────── */
 
-/* Output goes through console_write: the UART, or a task's capture */
+
 static int _uart_put(char c, FILE *f) {
     (void)f;
     console_write(&c, 1);
@@ -100,6 +100,8 @@ ssize_t write(int fd, const void *buf, size_t n) {
         console_write(buf, n);
         return (ssize_t)n;
     }
+    int r = console_capture_write(fd, buf, n);
+    if (r >= 0) return r;
     errno=EBADF; return -1;
 }
 

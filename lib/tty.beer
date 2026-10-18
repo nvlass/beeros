@@ -7,8 +7,8 @@
 ;;   {:key :a :mods #{:ctrl}}         control and alt chords
 ;; :write! takes a string that may contain ANSI escape sequences. The
 ;; serial tty reads the UART (VT100/xterm sequences) and, when
-;; use-keyboard? is on, beer.input key events; it writes to the UART. A
-;; framebuffer terminal emulator can provide the same map later.
+;; use-keyboard? is on, beer.input key events; it writes to the UART.
+;; beer.term provides the same map for a framebuffer terminal.
 
 (ns beer.tty)
 
@@ -130,16 +130,24 @@
         {:char c}
         {:key (:key ev) :mods mods}))))
 
-;; The same interrupt keys on keyboards: Ctrl-\ and Ctrl-Alt-Esc always,
-;; Ctrl-C under the same rule as on serial. beer.input drops the event.
+;; The same interrupt keys on keyboards: Ctrl-\ and Ctrl-Alt-Esc (:hard)
+;; always, Ctrl-C (:ctrl-c) under the same rule as on serial: they stop the
+;; serial REPL's form. Whoever owns the keyboard can take them instead:
+;; keyboard-interrupt holds (fn [kind]) returning true if it took the key
+;; (beer.term's REPL interrupts its own task). A taken key is dropped.
+(def keyboard-interrupt (atom nil))
+
 (defn interrupt-key? [ev]
-  (let [k (:key ev) m (or (:mods ev) no-mods)]
-    (when (and (= (:type ev) :key) (:down? ev)
-               (or (and (= k :backslash) (= m #{:ctrl}))
-                   (and (= k :escape) (contains? m :ctrl) (contains? m :alt))
-                   (and (= k :c) (= m #{:ctrl}) (ctrl-c-interrupts?))))
-      (request-interrupt!)
-      true)))
+  (let [k (:key ev) m (or (:mods ev) no-mods)
+        kind (when (and (= (:type ev) :key) (:down? ev))
+               (cond (or (and (= k :backslash) (= m #{:ctrl}))
+                         (and (= k :escape) (contains? m :ctrl) (contains? m :alt))) :hard
+                     (and (= k :c) (= m #{:ctrl})) :ctrl-c))
+        h @keyboard-interrupt]
+    (cond (nil? kind) false
+          h (h kind)
+          (or (= kind :hard) (ctrl-c-interrupts?)) (do (request-interrupt!) true)
+          :else false)))
 
 (reset! beer.input/intercept interrupt-key?)
 
@@ -167,16 +175,17 @@
    :read-key serial-read-key
    :write!   (fn [s] (print s))})
 
-(def current (atom serial))
+;; The tty of the running task: the serial one unless a REPL binds it
+;; (binding [beer.tty/*tty* (beer.term/tty t)] ...); spawned tasks inherit it.
+(def ^:dynamic *tty* serial)
 
-(defn read-key [] ((:read-key @current)))
+(defn read-key [] ((:read-key *tty*)))
 
 (defn recover!
-  "After an interrupt: serial console, attributes reset, cursor shown,
-  Ctrl-C interrupting again. Called by the REPL."
+  "After an interrupt: attributes reset, cursor shown, Ctrl-C interrupting
+  again. Called by the serial REPL."
   []
-  (reset! current serial)
   (ctrl-c-interrupts! true)
   (print (str csi "0m" csi "?25h"))
   nil)
-(defn write! [& xs] ((:write! @current) (apply str xs)))
+(defn write! [& xs] ((:write! *tty*) (apply str xs)))

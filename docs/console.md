@@ -26,8 +26,9 @@ keystroke and returns one of
 {:key :a :mods #{:ctrl}}         ; control / alt chords (alt-x arrives as ESC x on serial)
 ```
 
-`:write!` takes text with ANSI/ECMA-48 control sequences. `beer.tty/current`
-(an atom) is the console; `read-key` / `write!` go to it.
+`:write!` takes text with ANSI/ECMA-48 control sequences.
+`beer.tty/*tty*` (dynamic; the serial tty unless a REPL binds it) is the
+running task's console; `read-key` / `write!` go to it.
 
 The serial tty decodes VT100/xterm input: CSI and SS3 sequences, xterm
 modifier parameters (`ESC [1;5C` = C-Right), lone ESC by a 50 ms timeout,
@@ -109,34 +110,42 @@ inverse, 16/256/truecolour), `?25h/l`. Not yet: scroll regions,
 insert/delete line/char, alternate screen.
 
 Only the renderer task draws. Text reaches it two ways: `write!` queues
-it, and `attach-output!` adds a capture slot (below) that it drains.
+it, and `attach-output!` adds a capture stream's slot (below) that it
+drains. The term atom belongs to the renderer (it draws while updating
+it, so no `swap!`, which may retry); other tasks touch only `(:in @t)`.
 Scrolling is one `beer.gfx/copy-rect!`, glyphs are `beer.gfx/blit-bits!`.
 
-### Output capture
+### Capture streams
 
-`(beer.tty/capture-output!)` makes everything the calling task writes to
-stdout/stderr (`print`, `println`, error messages) go into a buffer
-instead of the UART (`kernel/console.c`, keyed by task); another task
-reads it with `(take-output slot)`, `(release-output! slot)` ends it. This
-is how a REPL's output lands on its terminal without beerlang having
-per-task `*out*`. `eval` runs its form in a task of its own, so the term
-REPL compiles each form to a fn and calls it in its own task. Tasks it
-`spawn`s print to the UART.
+`(beer.tty/capture-stream)` returns `[stream slot]`: an output stream
+whose bytes go into a buffer (`kernel/console.c`; its fd is one only
+beeros's `write()` knows) instead of the UART. `(take-output slot)`
+drains it, `(release-output! slot)` frees it. The term REPL binds `*out*`
+and `*err*` to one and the renderer drains it, so whatever the REPL, its
+forms and the tasks they `spawn` print (bindings are inherited) lands on
+the terminal.
 
 ### Two REPLs
 
 `/etc/init.beer` starts a term REPL when there is a framebuffer and
 `:console {:term {...}}` is in `/etc/beeros.edn` (`false`: none). It runs
-as a background task next to the serial REPL and takes the keyboard
-(`beer.tty/use-keyboard?` goes false); serial keeps the UART. Each has its
-own line editor state (history and kill ring are shared). Not separate
-yet, until beerlang has them (its TODO.md, "beeros requests" 8):
+as a background task next to the serial REPL and is independent of it:
 
-- the current namespace: `(in-ns 'foo)` in one moves the other;
-- interrupts: `Ctrl-\` and friends stop the serial REPL's form; a
-  runaway form in the term REPL can't be stopped;
-- `beer.tty/current` is the serial tty, so a program run from the term
-  that reads keys through it reads serial.
+- it runs inside `(binding [*ns* 'user *out* s *err* s beer.tty/*tty*
+  term-tty] ...)`, so `in-ns` there moves only its own namespace, and a
+  program run from it that reads keys or writes through `beer.tty` uses
+  the terminal;
+- it takes the keyboard (`beer.tty/use-keyboard?` goes false; serial
+  keeps the UART) and its interrupt keys (`beer.tty/keyboard-interrupt`):
+  `Ctrl-\` or Ctrl-Alt-Esc stop its form with `(interrupt! repl-task)`,
+  Ctrl-C does while a form runs (at the prompt it cancels the line). Its
+  loop survives with `(catch :interrupt e ...)`. The serial keys still
+  stop the serial REPL's form;
+- `eval` runs in the calling task (beerlang since f0a1c8b), so two REPLs
+  evaluating at once don't stall each other.
+
+Shared on purpose: every definition, and the line editor's history and
+kill ring.
 
 ## Fonts and config on disk (planned)
 

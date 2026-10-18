@@ -1,6 +1,6 @@
 ;; beer.lineedit — line editor for the REPL (any beer.tty)
 ;;
-;; (read-form prompt) edits on beer.tty/current; (read-form tty prompt) on
+;; (read-form prompt) edits on beer.tty/*tty*; (read-form tty prompt) on
 ;; the given tty, so REPLs on different ttys don't share one.
 ;;
 ;; Emacs-style keys, history, tab completion of symbols, paren matching,
@@ -225,7 +225,7 @@
 
 (defn read-line
   "Edit one line after prompt. Returns the string, or nil on C-c."
-  ([prompt] (read-line @beer.tty/current prompt))
+  ([prompt] (read-line beer.tty/*tty* prompt))
   ([tty prompt]
   (let [st0 {:tty tty :prompt prompt :buf [] :pos 0 :hist nil :saved [] :last nil}]
     (render! st0)
@@ -248,7 +248,7 @@
 (defn read-form
   "Read lines until they form a complete form; returns them joined with
   newlines (and a trailing one), or \"\" if cancelled."
-  ([prompt] (read-form @beer.tty/current prompt))
+  ([prompt] (read-form beer.tty/*tty* prompt))
   ([tty prompt]
   (loop [lines [] p prompt]
     (let [line (read-line tty p)]

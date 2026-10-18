@@ -231,8 +231,8 @@ at the top (`:name :main :args ...`) and namespaces below it. `beer.fs`
 reads paths through tar files (`/pkg/hello.tar/hello/core.beer`), and
 `beer.pkg/rescan!` (at boot) puts `/lib/` and every `/pkg/*.tar/` on
 `beer.core/*load-path*`. `(beer.pkg/run "hello" & args)` requires
-`:main` and calls `-main`. Inside a fn, `def` of an unqualified name
-defines in the *current* ns at run time: qualify it (`beer.pkg/*args*`).
+`:main` and calls `-main`; `(beer.pkg/exec "hello" & args)` loads
+`/bin/hello.beer` with `beer.pkg/*args*` bound.
 
 ## Input (`beer.input`)
 
@@ -272,12 +272,11 @@ writes land in the first `.bss` variable.
 **Terminal.** `beer.term` (`rootfs/lib/beer/term.beer`, on the disk) is a
 VT100-subset emulator on the framebuffer; `/etc/init.beer` starts a REPL
 on it (`:console {:term ...}` in `/etc/beeros.edn`) as a background task
-next to the serial REPL. Its output gets there by
-`beer.tty/capture-output!` (`kernel/console.c`: all stdout/stderr goes
-through `console_write`, which sends a captured task's bytes to its
-buffer). `eval` runs forms in a new task, so the term REPL calls
-`(eval (list 'fn [] form))` instead. Namespace and interrupts are still
-shared/serial-only (docs/console.md "Two REPLs").
+next to the serial REPL, independent of it: it binds `*ns*`, `*out*`/`*err*`
+(a `beer.tty/capture-stream`, drained by the renderer; `kernel/console.c`
+buffers writes to its fd) and `beer.tty/*tty*`, takes the keyboard and its
+interrupt keys (`beer.tty/keyboard-interrupt` → `(interrupt! repl-task)`,
+survived by `(catch :interrupt e ...)`). docs/console.md "Two REPLs".
 
 ## Graphics driver (`beer.gfx`)
 

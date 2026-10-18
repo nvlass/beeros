@@ -2,14 +2,14 @@
 ;;
 ;; A term is an atom holding a grid of cells, the cursor and the parser
 ;; state, drawn into a rectangle of the screen. Text goes in through a
-;; queue (write!, safe from any task) or the captured output of a task;
-;; one renderer task (start!) feeds both to the emulator, so only it ever
-;; draws. (tty t) is a beer.tty map, so the line editor runs on it.
+;; queue (write!, safe from any task) or a capture stream (*out* of the
+;; REPL); one renderer task (start!) feeds both to the emulator, so only it
+;; ever draws. (tty t) is a beer.tty map, so the line editor runs on it.
 ;;
 ;;   (def t (make {:cols 80 :rows 45 :scale 2}))
 ;;   (start! t)                     ; renderer task
 ;;   (write! t "\e[1;32mhello\e[0m\r\n")
-;;   (spawn (fn [] (repl t)))       ; a REPL on the terminal
+;;   (spawn (fn [] (repl t)))       ; a REPL on the terminal (or start-repl!)
 ;;
 ;; Understood: printable text with deferred wrap and scrolling; CR LF BS
 ;; TAB BEL; ESC 7/8/c; CSI A B C D E F G H f d J K S T s u m (bold,
@@ -75,7 +75,7 @@
                :cx 0 :cy 0 :wrap? false :saved nil :cursor? true :drawn-cursor nil
                :mode :ground :params ""}
         st    (assoc st :cells (vec (repeat rows (blank-row st))))]
-    (atom (assoc st :queue [] :slots [] :task nil))))
+    (atom (assoc st :in (atom {:queue [] :slots [] :task nil :repl nil})))))
 
 ;; ── drawing ───────────────────────────────────────────────────────────────
 
@@ -290,25 +290,30 @@
       (if (< i n) (recur (feed-char st (nth s i)) (inc i)) (show-cursor st)))))
 
 ;; ── input side ────────────────────────────────────────────────────────────
+;; The term atom belongs to the renderer task (it draws while it updates
+;; it, so it must not be a swap! that can retry). Everything other tasks
+;; touch is in (:in @t): an atom of {:queue [strings] :slots [capture
+;; slots] :task renderer :repl repl-task}.
 
 (defn write!
   "Queue text for the terminal (any task); the renderer draws it."
   [t s]
-  (swap! t (fn [st] (assoc st :queue (conj (:queue st) s))))
+  (swap! (:in @t) (fn [in] (assoc in :queue (conj (:queue in) s))))
   nil)
 
 (defn attach-output!
-  "Draw what the task that owns slot (beer.tty/capture-output!) prints."
+  "Also draw what is written to the capture stream of slot
+  (beer.tty/capture-stream)."
   [t slot]
-  (swap! t (fn [st] (assoc st :slots (conj (:slots st) slot))))
+  (swap! (:in @t) (fn [in] (assoc in :slots (conj (:slots in) slot))))
   nil)
 
 (defn pending-text [t]
-  (let [st @t
-        q  (:queue st)
-        outs (filter (fn [s] s) (map beer.tty/take-output (:slots st)))]
+  (let [in   (:in @t)
+        q    (:queue @in)
+        outs (filter (fn [s] s) (map beer.tty/take-output (:slots @in)))]
     (when (not (empty? q))
-      (swap! t (fn [st] (assoc st :queue (vec (drop (count q) (:queue st)))))))
+      (swap! in (fn [in] (assoc in :queue (vec (drop (count q) (:queue in)))))))
     (apply str (concat outs q))))
 
 (defn render-once!
@@ -317,20 +322,20 @@
   (let [s (pending-text t)]
     (if (= s "")
       false
-      (do (swap! t (fn [st] (feed st s))) true))))
+      (do (reset! t (feed @t s)) true))))
 
 (def render-idle-ms 10)
 
 (defn start!
   "Spawn the renderer task (once)."
   [t]
-  (when (nil? (:task @t))
+  (when (nil? (:task @(:in @t)))
     (redraw! t)
     (let [task (spawn (fn []
                         (loop []
                           (when (not (render-once! t)) (sleep render-idle-ms))
                           (recur))))]
-      (swap! t (fn [st] (assoc st :task task)))))
+      (swap! (:in @t) (fn [in] (assoc in :task task)))))
   t)
 
 (defn read-key
@@ -352,36 +357,48 @@
 
 (defn read-all [text] (read-string (str "[" text "\n]")))
 
-(defn eval-here
-  "eval runs the form in a task of its own, whose output isn't captured;
-  compile it to a fn instead and call that in this task. defmacro only
-  works at the top level, so it goes to eval."
-  [form]
-  (if (and (list? form) (= (first form) 'defmacro))
-    (eval form)
-    ((eval (list 'fn [] form)))))
-
 (defn error-text [e]
   (if (map? e) (str "Error: " (or (:message e) (pr-str e))) (str "Error: " (pr-str e))))
 
+(def esc (str (char 27)))
+
 (defn repl
-  "Read-eval-print on the terminal, forever. Run it in its own task:
-  (spawn (fn [] (repl t))). Its printed output goes to the terminal; the line
-  editor writes there through print too, so the two stay in order."
+  "Read-eval-print on the terminal, forever; run it in its own task
+  (start-repl! does). It binds *ns*, *out*/*err* (a capture stream the
+  renderer drains) and beer.tty/*tty*, so it has its own namespace and
+  what it and the tasks it spawns print lands on the terminal; the line
+  editor writes through *out* too, so everything stays in order. It takes
+  the keyboard: Ctrl-\\ or Ctrl-Alt-Esc interrupt it, Ctrl-C does while a
+  form runs."
   [t]
-  (let [slot (beer.tty/capture-output!)
-        tty  (assoc (tty t) :write! (fn [s] (print s)))]
+  (let [[out slot] (beer.tty/capture-stream)
+        busy (atom false)
+        me   (current-task)]
     (attach-output! t slot)
-    (reset! beer.tty/use-keyboard? false)   ; the keyboard is ours now
-    (println "beeros terminal REPL. Shares the image (and the current ns) with serial.")
-    (try
-      (loop [n 1]
-        (try
-          (doseq [form (read-all (beer.lineedit/read-form tty (str *ns* ":" n "> ")))]
-            (println (str "=> " (pr-str (eval-here form)))))
-          (catch e (println (error-text e))))
-        (recur (inc n)))
-      (finally (beer.tty/release-output! slot)))))
+    (reset! beer.tty/use-keyboard? false)
+    (reset! beer.tty/keyboard-interrupt
+            (fn [kind] (when (or (= kind :hard) @busy) (interrupt! me) true)))
+    (binding [*ns* 'user
+              *out* out
+              *err* out
+              beer.tty/*tty* (assoc (tty t) :write! (fn [s] (print s)))]
+      (println "beeros terminal REPL")
+      (try
+        (loop [n 1]
+          (try
+            (let [text (beer.lineedit/read-form (str *ns* ":" n "> "))]
+              (reset! busy true)
+              (doseq [form (read-all text)]
+                (println (str "=> " (pr-str (eval form))))))
+            (catch :interrupt e
+              (println (str esc "[0m" esc "[?25h" "\r\n[beeros] interrupted")))
+            (catch e (println (error-text e)))
+            (finally (reset! busy false)))
+          (recur (inc n)))
+        (finally
+          (reset! beer.tty/keyboard-interrupt nil)
+          (reset! beer.tty/use-keyboard? true)
+          (beer.tty/release-output! slot))))))
 
 (defn start-repl!
   "A full-screen terminal with a REPL; returns the term."
@@ -391,5 +408,6 @@
      (beer.gfx/fill-rect! (:x @t) (:y @t) (* (:cols @t) (:cw @t)) (* (:rows @t) (:ch @t))
                           (resolve-color (:default-bg @t) false))
      (start! t)
-     (spawn (fn [] (repl t)))
+     (let [r (spawn (fn [] (repl t)))]
+       (swap! (:in @t) (fn [in] (assoc in :repl r))))
      t)))

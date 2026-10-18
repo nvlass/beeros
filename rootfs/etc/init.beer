@@ -11,8 +11,14 @@
 ;; A terminal REPL on the screen (graphics builds), next to the serial one.
 (defn gfx? [] (try (not (empty? (ns-publics 'beer.gfx))) (catch e false)))
 
+;; :console {:wm {...}}: windows (beer.wm); {:term {...}}: one full-screen REPL
+(def wm-opts   (get-in config [:console :wm]))
 (def term-opts (get-in config [:console :term]))
 
-(when (and term-opts (gfx?))
+(when (and wm-opts (gfx?))
+  (require 'beer.wm)
+  (beer.wm/start! (if (map? wm-opts) wm-opts {})))
+
+(when (and term-opts (not wm-opts) (gfx?))
   (require 'beer.term)
   (def term (beer.term/start-repl! (if (map? term-opts) term-opts {}))))

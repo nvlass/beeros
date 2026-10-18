@@ -9,6 +9,7 @@
 #ifndef GFX_H
 #define GFX_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Called by platform init code once the framebuffer address is known. */
@@ -28,6 +29,24 @@ void     gfx_blit_bits(int32_t x, int32_t y, const uint8_t* bits, uint32_t w, ui
 
 /* Copy a w x h rectangle from (sx,sy) to (dx,dy); overlapping is fine. */
 void     gfx_copy_rect(uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, uint32_t dx, uint32_t dy);
+
+/* Off-screen surfaces (id 1..GFX_SURFACES-1; 0 is the screen) and
+ * compositing through the owner map; see gfx.c */
+#define GFX_SURFACES 64
+int      gfx_surface_new(uint32_t w, uint32_t h);          /* -1 if none left */
+void     gfx_surface_free(int id);
+void     gfx_fill_rect_on(int id, int64_t x, int64_t y, int64_t w, int64_t h, uint32_t color);
+void     gfx_blit_bits_on(int id, int32_t x, int32_t y, const uint8_t* bits, uint32_t w,
+                          uint32_t h, uint32_t stride, uint32_t scale, uint32_t fg, int64_t bg);
+void     gfx_copy_rect_on(int id, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h,
+                          uint32_t dx, uint32_t dy);
+void     gfx_own(int id, int64_t x, int64_t y, int64_t w, int64_t h);
+int      gfx_owner_at(int64_t x, int64_t y);
+void     gfx_present(int id, int64_t sx, int64_t sy, int64_t w, int64_t h, int64_t dx, int64_t dy);
+void     gfx_fill_owned(int id, int64_t x, int64_t y, int64_t w, int64_t h, uint32_t color);
+
+/* Software mouse cursor at (x,y), drawn over everything */
+void     gfx_cursor(int32_t x, int32_t y, bool show);
 
 /* Query screen dimensions (0 before gfx_init). */
 uint32_t gfx_width(void);

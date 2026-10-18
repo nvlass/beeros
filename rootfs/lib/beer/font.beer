@@ -121,11 +121,14 @@
           (not= cp 63) (glyph font 63)
           :else 0)))
 
-(defn draw-glyph!
-  "Glyph g at (x,y) in fg on bg (nil: transparent), each pixel scale x scale."
-  [font x y g fg bg scale]
-  (beer.gfx/blit-bits! x y (:bytes font) (+ (:base font) (* g (:glyph-size font)))
-                       (:width font) (:height font) (:stride font) scale fg bg))
+(defn draw-glyph-on!
+  "Glyph g at (x,y) of surface s (0: the screen) in fg on bg (nil:
+  transparent), each pixel scale x scale."
+  [s font x y g fg bg scale]
+  (beer.gfx/blit-bits-on! s x y (:bytes font) (+ (:base font) (* g (:glyph-size font)))
+                          (:width font) (:height font) (:stride font) scale fg bg))
+
+(defn draw-glyph! [font x y g fg bg scale] (draw-glyph-on! 0 font x y g fg bg scale))
 
 (defn draw!
   "String s at (x,y); returns the x after it."

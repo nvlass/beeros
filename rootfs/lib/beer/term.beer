@@ -58,7 +58,10 @@
 (defn make
   "A terminal. Options: :x :y (pixels, 0), :cols :rows (default: fill the
   screen), :font (beer.font map, default the builtin 8x8), :scale (2),
-  :fg :bg (palette indexes, 7 and 0)."
+  :fg :bg (palette indexes, 7 and 0). For a window system: :surface (a
+  beer.gfx surface id to draw into; 0, the screen, by default), :present
+  (fn called by the renderer after each batch it drew), :keys (a channel
+  of beer.input key events to read instead of beer.input's queue)."
   [opts]
   (let [font  (or (:font opts) (beer.font/builtin))
         scale (get opts :scale 2)
@@ -73,15 +76,18 @@
         st    {:x x :y y :cols cols :rows rows :font font :scale scale :cw cw :ch ch
                :default-fg fg :default-bg bg :fg fg :bg bg :bold? false :inverse? false
                :cx 0 :cy 0 :wrap? false :saved nil :cursor? true :drawn-cursor nil
-               :mode :ground :params ""}
+               :mode :ground :params ""
+               :surf (get opts :surface 0) :present (:present opts) :keys (:keys opts)}
         st    (assoc st :cells (vec (repeat rows (blank-row st))))]
-    (atom (assoc st :in (atom {:queue [] :slots [] :task nil :repl nil})))))
+    (atom (assoc st :in (atom {:queue [] :slots [] :task nil :repl nil
+                               :interrupt nil :closing? false})))))
 
 ;; ── drawing ───────────────────────────────────────────────────────────────
 
 (defn draw-cell! [st col row cell inverse?]
   (let [[c fg bg] cell]
-    (beer.font/draw-glyph! (:font st) (+ (:x st) (* col (:cw st))) (+ (:y st) (* row (:ch st)))
+    (beer.font/draw-glyph-on! (:surf st) (:font st)
+                              (+ (:x st) (* col (:cw st))) (+ (:y st) (* row (:ch st)))
                            (beer.font/glyph (:font st) (int c))
                            (if inverse? bg fg) (if inverse? fg bg) (:scale st))))
 
@@ -114,6 +120,7 @@
             (recur (inc col))))
         (recur (inc row))))
     (reset! t (show-cursor (assoc st :drawn-cursor nil)))
+    (when (:present st) ((:present st)))
     nil))
 
 ;; ── grid operations (update cells and pixels together) ────────────────────
@@ -125,7 +132,7 @@
     st
     (let [b   (blank st)
           [_ _ bg] b]
-      (beer.gfx/fill-rect! (+ (:x st) (* from (:cw st))) (+ (:y st) (* row (:ch st)))
+      (beer.gfx/fill-rect-on! (:surf st) (+ (:x st) (* from (:cw st))) (+ (:y st) (* row (:ch st)))
                            (* (- to from) (:cw st)) (:ch st) bg)
       (assoc st :cells
              (assoc (:cells st) row
@@ -139,7 +146,7 @@
 (defn scroll-up [st n]
   (let [n (min n (:rows st)) keep (- (:rows st) n)]
     (when (> keep 0)
-      (beer.gfx/copy-rect! (:x st) (+ (:y st) (* n (:ch st))) (* (:cols st) (:cw st))
+      (beer.gfx/copy-rect-on! (:surf st) (:x st) (+ (:y st) (* n (:ch st))) (* (:cols st) (:cw st))
                            (* keep (:ch st)) (:x st) (:y st)))
     (erase-rows (assoc st :cells (vec (concat (subvec (:cells st) n)
                                               (repeat n (blank-row st)))))
@@ -148,7 +155,7 @@
 (defn scroll-down [st n]
   (let [n (min n (:rows st)) keep (- (:rows st) n)]
     (when (> keep 0)
-      (beer.gfx/copy-rect! (:x st) (:y st) (* (:cols st) (:cw st))
+      (beer.gfx/copy-rect-on! (:surf st) (:x st) (:y st) (* (:cols st) (:cw st))
                            (* keep (:ch st)) (:x st) (+ (:y st) (* n (:ch st)))))
     (erase-rows (assoc st :cells (vec (concat (repeat n (blank-row st))
                                               (subvec (:cells st) 0 keep))))
@@ -322,7 +329,10 @@
   (let [s (pending-text t)]
     (if (= s "")
       false
-      (do (reset! t (feed @t s)) true))))
+      (let [st (feed @t s)]
+        (reset! t st)
+        (when (:present st) ((:present st)))
+        true))))
 
 (def render-idle-ms 10)
 
@@ -333,21 +343,46 @@
     (redraw! t)
     (let [task (spawn (fn []
                         (loop []
-                          (when (not (render-once! t)) (sleep render-idle-ms))
-                          (recur))))]
+                          (when (not (:closing? @(:in @t)))
+                            (when (not (render-once! t)) (sleep render-idle-ms))
+                            (recur)))))]
       (swap! (:in @t) (fn [in] (assoc in :task task)))))
   t)
 
 (defn read-key
-  "Next keystroke from the beer.input keyboards (waits for one)."
-  []
-  (loop []
-    (or (beer.tty/event->keystroke (beer.input/wait-event)) (recur))))
+  "Next keystroke for the terminal: from its :keys channel if it has one,
+  else from the beer.input keyboards (waits for one)."
+  [t]
+  (let [ch (or (:keys @t) beer.input/queue)]
+    (loop []
+      (or (beer.tty/event->keystroke (<! ch)) (recur)))))
 
 (defn tty
-  "A beer.tty for the terminal: keys from beer.input, text to the term."
+  "A beer.tty for the terminal: keys from read-key, text to the term."
   [t]
-  {:name "term" :read-key read-key :write! (fn [s] (write! t s)) :cols (:cols @t)})
+  {:name "term" :read-key (fn [] (read-key t)) :write! (fn [s] (write! t s)) :cols (:cols @t)})
+
+(defn interrupt-key!
+  "What the terminal's REPL does with an interrupt key (:hard or :ctrl-c);
+  true if it took it. Whoever owns the keyboard calls this."
+  [t kind]
+  (let [f (:interrupt @(:in @t))] (when f (f kind))))
+
+(defn take-keyboard!
+  "Make t the keyboard's terminal when there is no window manager: the
+  serial tty stops reading beer.input and the interrupt keys go to t."
+  [t]
+  (reset! beer.tty/use-keyboard? false)
+  (reset! beer.tty/keyboard-interrupt (fn [kind] (interrupt-key! t kind)))
+  t)
+
+(defn close!
+  "Stop the terminal's REPL and renderer."
+  [t]
+  (let [in (:in @t)]
+    (swap! in (fn [m] (assoc m :closing? true)))
+    (when (:repl @in) (interrupt! (:repl @in)))
+    nil))
 
 ;; ── a REPL on the terminal ────────────────────────────────────────────────
 
@@ -364,40 +399,46 @@
   renderer drains) and beer.tty/*tty*, so it has its own namespace and
   what it and the tasks it spawns print lands on the terminal; the line
   editor writes through *out* too, so everything stays in order. It takes
-  the keyboard: Ctrl-\\ or Ctrl-Alt-Esc interrupt it, Ctrl-C does while a
-  form runs."
+  the interrupt keys from whoever owns the keyboard (interrupt-key!):
+  Ctrl-\\ or Ctrl-Alt-Esc interrupt it, Ctrl-C does while a form runs.
+  close! ends it."
   [t]
   (let [[out slot] (beer.tty/capture-stream)
         busy (atom false)
-        me   (current-task)]
+        me   (current-task)
+        in   (:in @t)]
     (attach-output! t slot)
-    (reset! beer.tty/use-keyboard? false)
-    (reset! beer.tty/keyboard-interrupt
-            (fn [kind] (when (or (= kind :hard) @busy) (interrupt! me) true)))
+    (swap! in (fn [m] (assoc m :interrupt
+                             (fn [kind] (when (or (= kind :hard) @busy) (interrupt! me) true)))))
     (binding [*ns* 'user
               *out* out
               *err* out
               beer.tty/*tty* (assoc (tty t) :write! (fn [s] (print s)))]
       (println "beeros terminal REPL")
-      (loop [n 1]
-        (reset! busy false)
-        (try
-          (let [text (beer.lineedit/read-form (str *ns* ":" n "> "))]
-            (reset! busy true)
-            (doseq [form (read-all text)]
-              (println (str "=> " (pr-str (eval form))))))
-          (catch :interrupt e
-            (println (str esc "[0m" esc "[?25h" "\r\n[beeros] interrupted")))
-          (catch e (println (error-text e))))
-        (recur (inc n))))))
+      (try
+        (loop [n 1]
+          (when (not (:closing? @in))
+            (reset! busy false)
+            (try
+              (let [text (beer.lineedit/read-form (str *ns* ":" n "> "))]
+                (reset! busy true)
+                (doseq [form (read-all text)]
+                  (println (str "=> " (pr-str (eval form))))))
+              (catch :interrupt e
+                (when (not (:closing? @in))
+                  (println (str esc "[0m" esc "[?25h" "\r\n[beeros] interrupted"))))
+              (catch e (println (error-text e))))
+            (recur (inc n))))
+        (finally (beer.tty/release-output! slot))))))
 
 (defn start-repl!
   "A full-screen terminal with a REPL; returns the term."
   ([] (start-repl! {}))
   ([opts]
    (let [t (make opts)]
-     (beer.gfx/fill-rect! (:x @t) (:y @t) (* (:cols @t) (:cw @t)) (* (:rows @t) (:ch @t))
-                          (resolve-color (:default-bg @t) false))
+     (beer.gfx/fill-rect-on! (:surf @t) (:x @t) (:y @t) (* (:cols @t) (:cw @t)) (* (:rows @t) (:ch @t))
+                             (resolve-color (:default-bg @t) false))
+     (when (nil? (:keys opts)) (take-keyboard! t))
      (start! t)
      (let [r (spawn (fn [] (repl t)))]
        (swap! (:in @t) (fn [in] (assoc in :repl r))))

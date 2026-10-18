@@ -107,7 +107,7 @@ static Value native_ctrl_c_get(VM* vm, int argc, Value* argv) {
  * use fds CAPTURE_FD0.. that only beeros's write() knows. LF becomes
  * CR LF, as on the UART. */
 
-#define CAPTURES    8
+#define CAPTURES    32
 #define CAPTURE_FD0 3
 #define CAPTURE_MAX (64 * 1024)  /* beyond this, output is dropped */
 

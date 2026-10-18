@@ -1,0 +1,236 @@
+;; beer.wm — a minimal window manager in the spirit of wm2
+;;
+;; Overlapping windows, each a REPL on a beer.term; a title tab with a
+;; close box; click to raise and focus, drag the tab to move. The window
+;; manager owns the keyboard and the pointer: it reads beer.input's queue,
+;; moves the pointer, and hands key events to the focused window.
+;;
+;;   mouse                          keys (for when QEMU grabs the mouse)
+;;   click the desktop: new REPL    Ctrl-Alt-Enter  new REPL
+;;   click a window: raise, focus   Ctrl-Alt-Tab    next window
+;;   drag the tab: move             Ctrl-Alt-W      close
+;;   click the box in the tab: close
+;;
+;; Every window draws into its own beer.gfx surface; the screen shows a
+;; surface where the owner map says so (restack! sets it, back to front),
+;; so a window never draws over the one above it.
+;;
+;;   (beer.wm/start! {:cols 48 :rows 14 :scale 2})
+;;   (beer.wm/open! {:x 100 :y 80})
+
+(ns beer.wm
+  (:require [beer.term] [beer.font]))
+
+(def desktop-color 0x2E3440)
+(def border-color  0x000000)
+(def tab-focused   0xE5C07B)
+(def tab-plain     0x9097A0)
+(def tab-text      0x000000)
+(def border 1)
+(def tab-h 12)              ; title tab: the 8x8 font plus 2 px above and below
+
+(def state (atom {:windows [] :focus nil :pointer [0 0] :drag nil :next 1
+                  :opts {} :task nil}))
+
+(def font (beer.font/builtin))
+
+;; ── drawing a window's frame ──────────────────────────────────────────────
+
+(defn text-on! [s x y text color]
+  (let [n (count text)]
+    (loop [i 0 x x]
+      (when (< i n)
+        (beer.font/draw-glyph-on! s font x y (beer.font/glyph font (int (nth text i))) color nil 1)
+        (recur (inc i) (+ x 8))))))
+
+(defn close-box [w]                   ; [x y size] in window coordinates
+  [(- (:w w) border tab-h) border tab-h])
+
+(defn draw-frame! [w focused?]
+  (let [s (:surf w) ww (:w w) wh (:h w)
+        [bx by bs] (close-box w)]
+    (beer.gfx/fill-rect-on! s 0 0 ww border border-color)
+    (beer.gfx/fill-rect-on! s 0 (- wh border) ww border border-color)
+    (beer.gfx/fill-rect-on! s 0 0 border wh border-color)
+    (beer.gfx/fill-rect-on! s (- ww border) 0 border wh border-color)
+    (beer.gfx/fill-rect-on! s border border (- ww (* 2 border)) tab-h (if focused? tab-focused tab-plain))
+    (beer.gfx/fill-rect-on! s border (+ border tab-h) (- ww (* 2 border)) border border-color)
+    (text-on! s (+ border 4) (+ border 2) (:title w) tab-text)
+    ;; close box: a framed square with an x
+    (beer.gfx/fill-rect-on! s (+ bx 2) (+ by 2) (- bs 4) (- bs 4) tab-text)
+    (beer.gfx/fill-rect-on! s (+ bx 3) (+ by 3) (- bs 6) (- bs 6) (if focused? tab-focused tab-plain))
+    (loop [i 0]
+      (when (< i (- bs 8))
+        (beer.gfx/fill-rect-on! s (+ bx 4 i) (+ by 4 i) 1 1 tab-text)
+        (beer.gfx/fill-rect-on! s (- (+ bx bs) 5 i) (+ by 4 i) 1 1 tab-text)
+        (recur (inc i))))))
+
+;; ── compositing ───────────────────────────────────────────────────────────
+
+(defn window [id] (some (fn [w] (when (= (:id w) id) w)) (:windows @state)))
+
+(defn present! [w] (beer.gfx/present! (:surf w) 0 0 (:w w) (:h w) (:x w) (:y w)))
+
+(defn restack!
+  "Owner map back to front, then repaint the desktop and every window."
+  []
+  (let [ws (:windows @state)]
+    (beer.gfx/own! 0 0 0 (beer.gfx/width) (beer.gfx/height))
+    (doseq [w ws] (beer.gfx/own! (:surf w) (:x w) (:y w) (:w w) (:h w)))
+    (beer.gfx/fill-owned! 0 0 0 (beer.gfx/width) (beer.gfx/height) desktop-color)
+    (doseq [w ws] (present! w))
+    nil))
+
+;; ── windows ───────────────────────────────────────────────────────────────
+
+(defn focused [] (window (:focus @state)))
+
+(defn focus!
+  "Raise window id to the top and give it the keyboard."
+  [id]
+  (let [old (focused)
+        w   (window id)]
+    (when w
+      (swap! state (fn [st] (assoc st :focus id
+                                   :windows (conj (vec (filter (fn [x] (not= (:id x) id)) (:windows st)))
+                                                  w))))
+      (when (and old (not= (:id old) id)) (draw-frame! old false))
+      (draw-frame! w true)
+      (restack!))
+    nil))
+
+(defn open!
+  "A new REPL window; options as for start! plus :x :y :title."
+  ([] (open! {}))
+  ([opts]
+   (let [o     (merge (:opts @state) opts)
+         scale (get o :scale 2)
+         cols  (get o :cols 48)
+         rows  (get o :rows 14)
+         cw    (* scale (:width font)) ch (* scale (:height font))
+         w     (+ (* 2 border) (* cols cw))
+         h     (+ border tab-h border (* rows ch) border)
+         n     (:next @state)
+         x     (max 0 (min (get o :x (+ 40 (* 24 (rem n 10)))) (- (beer.gfx/width) w)))
+         y     (max 0 (min (get o :y (+ 40 (* 24 (rem n 10)))) (- (beer.gfx/height) h)))
+         s     (beer.gfx/surface w h)]
+     (when (nil? s) (throw (ex-info "wm: no free surface" {:reason :no-surface})))
+     (let [id   n
+           keys (chan 64)
+           t    (beer.term/make {:surface s :x border :y (+ border tab-h border)
+                                 :cols cols :rows rows :scale scale :keys keys
+                                 :present (fn [] (let [w (window id)] (when w (present! w))))})
+           win  {:id id :surf s :x x :y y :w w :h h :title (get o :title (str "repl " n))
+                 :term t :keys keys}]
+       (swap! state (fn [st] (assoc st :next (inc n) :windows (conj (:windows st) win))))
+       (beer.term/start! t)
+       (let [r (spawn (fn [] (beer.term/repl t)))]
+         (swap! (:in @t) (fn [m] (assoc m :repl r))))
+       (focus! id)
+       id))))
+
+(defn close!
+  "Close window id (default: the focused one): stop its REPL, free its surface."
+  ([] (let [w (focused)] (when w (close! (:id w)))))
+  ([id]
+   (let [w (window id)]
+     (when w
+       (beer.term/close! (:term w))
+       (swap! state (fn [st] (assoc st :windows (vec (filter (fn [x] (not= (:id x) id)) (:windows st)))
+                                    :focus (when (not= (:focus st) id) (:focus st)))))
+       (beer.gfx/surface-free! (:surf w))
+       (let [top (last (:windows @state))]
+         (if (and top (nil? (:focus @state)))
+           (focus! (:id top))
+           (restack!))))
+     nil)))
+
+(defn next-window! []
+  (let [ws (:windows @state)]
+    (when (> (count ws) 1) (focus! (:id (first ws))))))
+
+(defn move! [id x y]
+  (swap! state (fn [st] (assoc st :windows (vec (map (fn [w] (if (= (:id w) id) (assoc w :x x :y y) w))
+                                                    (:windows st))))))
+  nil)
+
+;; ── input ─────────────────────────────────────────────────────────────────
+
+(defn window-at
+  "The topmost window under (x,y), or nil."
+  [x y]
+  (last (filter (fn [w] (and (>= x (:x w)) (< x (+ (:x w) (:w w)))
+                             (>= y (:y w)) (< y (+ (:y w) (:h w)))))
+                (:windows @state))))
+
+(defn pointer! [x y]
+  (let [x (max 0 (min x (dec (beer.gfx/width))))
+        y (max 0 (min y (dec (beer.gfx/height))))]
+    (swap! state (fn [st] (assoc st :pointer [x y])))
+    (beer.gfx/cursor! x y true)))
+
+(defn on-press! []
+  (let [[px py] (:pointer @state)
+        w (window-at px py)]
+    (if (nil? w)
+      (open! {:x px :y py})
+      (let [lx (- px (:x w)) ly (- py (:y w))
+            [bx by bs] (close-box w)]
+        (cond
+          (and (>= lx bx) (< lx (+ bx bs)) (>= ly by) (< ly (+ by bs))) (close! (:id w))
+          (< ly (+ border tab-h)) (do (focus! (:id w))
+                                      (swap! state (fn [st] (assoc st :drag [(:id w) lx ly]))))
+          :else (when (not= (:focus @state) (:id w)) (focus! (:id w))))))))
+
+(defn drag-to! []
+  (let [st @state [id ox oy] (:drag st) [px py] (:pointer st)]
+    (when id
+      (move! id (- px ox) (- py oy))
+      (restack!))))
+
+(defn wm-key?
+  "Ctrl-Alt-Enter/Tab/W; true if it was one (and it's done)."
+  [ev]
+  (let [m (or (:mods ev) #{})]
+    (when (and (:down? ev) (contains? m :ctrl) (contains? m :alt))
+      (cond (= (:key ev) :enter) (do (open!) true)
+            (= (:key ev) :tab)   (do (next-window!) true)
+            (= (:key ev) :w)     (do (close!) true)
+            :else false))))
+
+(defn handle! [ev]
+  (let [t (:type ev)]
+    (cond
+      (= t :key)    (when (not (wm-key? ev))
+                      (let [w (focused)] (when w (offer! (:keys w) ev))))
+      (= t :motion) (let [[x y] (:pointer @state)] (pointer! (+ x (:dx ev)) (+ y (:dy ev))))
+      (= t :abs)    (pointer! (int (* (:x ev) (beer.gfx/width))) (int (* (:y ev) (beer.gfx/height))))
+      (= t :button) (when (= (:button ev) :left)
+                      (if (:down? ev)
+                        (on-press!)
+                        (do (drag-to!) (swap! state (fn [st] (assoc st :drag nil))))))
+      :else nil)))
+
+(defn run-loop []
+  (loop []
+    (handle! (<! beer.input/queue))
+    ;; take what else is waiting before repainting a drag
+    (loop [] (let [ev (poll! beer.input/queue)] (when ev (handle! ev) (recur))))
+    (when (:drag @state) (drag-to!))
+    (recur)))
+
+(defn start!
+  "Take over the screen, the keyboard and the pointer; open one REPL.
+  Options (defaults for new windows): :cols :rows :scale."
+  ([] (start! {}))
+  ([opts]
+   (when (nil? (:task @state))
+     (swap! state (fn [st] (assoc st :opts opts)))
+     (reset! beer.tty/use-keyboard? false)
+     (reset! beer.tty/keyboard-interrupt
+             (fn [kind] (let [w (focused)] (when w (beer.term/interrupt-key! (:term w) kind)))))
+     (restack!)
+     (pointer! (quot (beer.gfx/width) 2) (quot (beer.gfx/height) 2))
+     (open! {})
+     (swap! state (fn [st] (assoc st :task (spawn run-loop)))))
+   nil))

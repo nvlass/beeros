@@ -60,7 +60,8 @@ beeros/
 │   ├── lineedit.beer  ← beer.lineedit: REPL line editor (history, completion)
 │   └── gfx.beer       ← beerlang drawing library
 ├── rootfs/            ← root filesystem contents (etc/init.beer, etc/beeros.edn, lib/, bin/)
-│   └── lib/beer/      ← term.beer (beer.term: VT100 emulator + REPL), font.beer (PSF fonts)
+│   └── lib/beer/      ← term.beer (beer.term: VT100 emulator + REPL), font.beer (PSF fonts),
+│                         wm.beer (beer.wm: window manager)
 ├── packages/<name>/   ← sample packages (beer.edn, src/, assets/) → /pkg/<name>.tar
 ├── scripts/qemu-drive.py ← scripted REPL + monitor/QMP input for QEMU tests
 └── Makefile
@@ -264,6 +265,13 @@ buffers writes to its fd) and `beer.tty/*tty*`, takes the keyboard and its
 interrupt keys (`beer.tty/keyboard-interrupt` → `(interrupt! repl-task)`,
 survived by `(catch :interrupt e ...)`). docs/console.md "Two REPLs".
 
+**Window manager.** `beer.wm` (`rootfs/lib/beer/wm.beer`, `:console {:wm
+...}`, the default) puts each REPL in a window: its own `beer.gfx` surface,
+composited through a C owner map (`own!`, `present!`, `fill-owned!`;
+`kernel/gfx.c`), a software cursor (`cursor!`). The WM task alone reads
+`beer.input/queue` and feeds keys to the focused window's channel.
+docs/console.md "Window manager".
+
 ## Graphics driver (`beer.gfx`)
 
 Two-layer architecture, no beerlang submodule changes:
@@ -275,7 +283,9 @@ Two-layer architecture, no beerlang submodule changes:
 
 **Layer 2 — `beer.gfx` namespace** (`kernel/gfx_natives.c`, `lib/gfx.beer`):
 - Natives registered at boot: `set-pixel!`, `fill-rect!`, `width`, `height`, `rgb`, `clear!`,
-  `blit-bits!` (1-bit bitmap from a ByteBuffer, scaled; font glyphs), `copy-rect!` (scrolling)
+  `blit-bits!` (1-bit bitmap from a ByteBuffer, scaled; font glyphs), `copy-rect!` (scrolling);
+  off-screen surfaces (`surface`, `surface-free!`, `*-on!` variants) and compositing
+  (`own!`, `owner-at`, `present!`, `fill-owned!`, `cursor!`)
 - `lib/gfx.beer` embedded at build time via `xxd -i` → `kernel/gfx_beer_blob.h`, then compiled and run using the same reader→compiler→scheduler pattern as the REPL
 - Higher-level functions in `lib/gfx.beer`: `line!` (Bresenham), `circle!` (midpoint), `rect!` (outlined), `text!` (8×8 bitmap font), `color`, `clear!`
 

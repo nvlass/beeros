@@ -10,6 +10,7 @@
  */
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -96,43 +97,152 @@ static Value native_gfx_clear(VM* vm, int argc, Value* argv) {
     return VALUE_NIL;
 }
 
-/* (blit-bits! x y buf off w h stride scale fg bg) — 1-bit bitmap from a
- * ByteBuffer at off (font glyphs); bg nil = transparent */
-static Value native_gfx_blit_bits(VM* vm, int argc, Value* argv) {
-    if (argc != 10 || !is_bytebuffer(argv[2])) {
-        vm_error(vm, "blit-bits!: (blit-bits! x y buf off w h stride scale fg bg)");
-        return VALUE_NIL;
+/* All fixnum arguments in argv[from..to) (skipping skip, or -1) */
+static bool fixnums(VM* vm, const char* who, Value* argv, int from, int to, int skip) {
+    for (int i = from; i < to; i++) {
+        if (i != skip && !is_fixnum(argv[i])) {
+            char msg[96];
+            snprintf(msg, sizeof msg, "%s: numbers expected", who);
+            vm_error(vm, msg);
+            return false;
+        }
     }
-    for (int i = 0; i < 9; i++) {
-        if (i != 2 && !is_fixnum(argv[i])) { vm_error(vm, "blit-bits!: numbers expected"); return VALUE_NIL; }
-    }
-    int64_t off = untag_fixnum(argv[3]);
-    uint32_t h = (uint32_t)untag_fixnum(argv[5]), stride = (uint32_t)untag_fixnum(argv[6]);
+    return true;
+}
+
+#define I(k) untag_fixnum(argv[k])
+
+static Value blit_bits(VM* vm, const char* who, int id, Value* argv) {
+    if (!is_bytebuffer(argv[2])) { vm_error(vm, "blit-bits!: a ByteBuffer expected"); return VALUE_NIL; }
+    if (!fixnums(vm, who, argv, 0, 9, 2)) return VALUE_NIL;
+    int64_t off = I(3);
+    uint32_t h = (uint32_t)I(5), stride = (uint32_t)I(6);
     if (off < 0 || (uint64_t)off + (uint64_t)h * stride > bytebuffer_capacity(argv[2])) {
         vm_error(vm, "blit-bits!: bitmap outside the buffer");
         return VALUE_NIL;
     }
-    int64_t bg = is_fixnum(argv[9]) ? untag_fixnum(argv[9]) : -1;
-    gfx_blit_bits((int32_t)untag_fixnum(argv[0]), (int32_t)untag_fixnum(argv[1]),
-                  bytebuffer_data(argv[2]) + off, (uint32_t)untag_fixnum(argv[4]), h, stride,
-                  (uint32_t)untag_fixnum(argv[7]), (uint32_t)untag_fixnum(argv[8]), bg);
+    int64_t bg = is_fixnum(argv[9]) ? I(9) : -1;
+    gfx_blit_bits_on(id, (int32_t)I(0), (int32_t)I(1), bytebuffer_data(argv[2]) + off,
+                     (uint32_t)I(4), h, stride, (uint32_t)I(7), (uint32_t)I(8), bg);
+    return VALUE_NIL;
+}
+
+/* (blit-bits! x y buf off w h stride scale fg bg) — 1-bit bitmap from a
+ * ByteBuffer at off (font glyphs), on the screen; bg nil = transparent */
+static Value native_gfx_blit_bits(VM* vm, int argc, Value* argv) {
+    if (argc != 10) { vm_error(vm, "blit-bits!: (blit-bits! x y buf off w h stride scale fg bg)"); return VALUE_NIL; }
+    return blit_bits(vm, "blit-bits!", 0, argv);
+}
+
+/* (blit-bits-on! surface x y buf off w h stride scale fg bg) */
+static Value native_gfx_blit_bits_on(VM* vm, int argc, Value* argv) {
+    if (argc != 11 || !is_fixnum(argv[0])) {
+        vm_error(vm, "blit-bits-on!: (blit-bits-on! surface x y buf off w h stride scale fg bg)");
+        return VALUE_NIL;
+    }
+    return blit_bits(vm, "blit-bits-on!", (int)untag_fixnum(argv[0]), argv + 1);
+}
+
+static Value copy_rect(VM* vm, const char* who, int id, Value* argv) {
+    if (!fixnums(vm, who, argv, 0, 6, -1)) return VALUE_NIL;
+    for (int i = 0; i < 6; i++) if (I(i) < 0) return VALUE_NIL;
+    gfx_copy_rect_on(id, (uint32_t)I(0), (uint32_t)I(1), (uint32_t)I(2), (uint32_t)I(3),
+                     (uint32_t)I(4), (uint32_t)I(5));
     return VALUE_NIL;
 }
 
 /* (copy-rect! sx sy w h dx dy) — e.g. scroll a text area */
 static Value native_gfx_copy_rect(VM* vm, int argc, Value* argv) {
     if (argc != 6) { vm_error(vm, "copy-rect!: (copy-rect! sx sy w h dx dy)"); return VALUE_NIL; }
-    for (int i = 0; i < 6; i++) {
-        if (!is_fixnum(argv[i]) || untag_fixnum(argv[i]) < 0) {
-            vm_error(vm, "copy-rect!: non-negative numbers expected");
-            return VALUE_NIL;
-        }
+    return copy_rect(vm, "copy-rect!", 0, argv);
+}
+
+/* (copy-rect-on! surface sx sy w h dx dy) */
+static Value native_gfx_copy_rect_on(VM* vm, int argc, Value* argv) {
+    if (argc != 7 || !is_fixnum(argv[0])) {
+        vm_error(vm, "copy-rect-on!: (copy-rect-on! surface sx sy w h dx dy)");
+        return VALUE_NIL;
     }
-    gfx_copy_rect((uint32_t)untag_fixnum(argv[0]), (uint32_t)untag_fixnum(argv[1]),
-                  (uint32_t)untag_fixnum(argv[2]), (uint32_t)untag_fixnum(argv[3]),
-                  (uint32_t)untag_fixnum(argv[4]), (uint32_t)untag_fixnum(argv[5]));
+    return copy_rect(vm, "copy-rect-on!", (int)untag_fixnum(argv[0]), argv + 1);
+}
+
+/* (fill-rect-on! surface x y w h color) */
+static Value native_gfx_fill_rect_on(VM* vm, int argc, Value* argv) {
+    if (argc != 6 || !fixnums(vm, "fill-rect-on!", argv, 0, 6, -1)) {
+        if (argc != 6) vm_error(vm, "fill-rect-on!: (fill-rect-on! surface x y w h color)");
+        return VALUE_NIL;
+    }
+    gfx_fill_rect_on((int)I(0), I(1), I(2), I(3), I(4), (uint32_t)I(5));
     return VALUE_NIL;
 }
+
+/* (surface w h) => id of a new off-screen surface (black), or nil */
+static Value native_gfx_surface(VM* vm, int argc, Value* argv) {
+    if (argc != 2 || !fixnums(vm, "surface", argv, 0, 2, -1)) {
+        if (argc != 2) vm_error(vm, "surface: (surface w h)");
+        return VALUE_NIL;
+    }
+    if (I(0) <= 0 || I(1) <= 0) return VALUE_NIL;
+    int id = gfx_surface_new((uint32_t)I(0), (uint32_t)I(1));
+    return id < 0 ? VALUE_NIL : make_fixnum(id);
+}
+
+/* (surface-free! id) — also gives its screen pixels back to the desktop */
+static Value native_gfx_surface_free(VM* vm, int argc, Value* argv) {
+    if (argc != 1 || !fixnums(vm, "surface-free!", argv, 0, 1, -1)) return VALUE_NIL;
+    gfx_surface_free((int)I(0));
+    return VALUE_NIL;
+}
+
+/* (own! id x y w h) — screen pixels in the rect show surface id (0: desktop) */
+static Value native_gfx_own(VM* vm, int argc, Value* argv) {
+    if (argc != 5 || !fixnums(vm, "own!", argv, 0, 5, -1)) {
+        if (argc != 5) vm_error(vm, "own!: (own! id x y w h)");
+        return VALUE_NIL;
+    }
+    gfx_own((int)I(0), I(1), I(2), I(3), I(4));
+    return VALUE_NIL;
+}
+
+/* (owner-at x y) => surface id shown at that screen pixel (0: desktop) */
+static Value native_gfx_owner_at(VM* vm, int argc, Value* argv) {
+    if (argc != 2 || !fixnums(vm, "owner-at", argv, 0, 2, -1)) return VALUE_NIL;
+    int id = gfx_owner_at(I(0), I(1));
+    return id < 0 ? VALUE_NIL : make_fixnum(id);
+}
+
+/* (present! id sx sy w h dx dy) — copy the surface rect to the screen at
+ * (dx,dy), where the owner map says id */
+static Value native_gfx_present(VM* vm, int argc, Value* argv) {
+    if (argc != 7 || !fixnums(vm, "present!", argv, 0, 7, -1)) {
+        if (argc != 7) vm_error(vm, "present!: (present! id sx sy w h dx dy)");
+        return VALUE_NIL;
+    }
+    gfx_present((int)I(0), I(1), I(2), I(3), I(4), I(5), I(6));
+    return VALUE_NIL;
+}
+
+/* (fill-owned! id x y w h color) — fill the screen pixels owned by id */
+static Value native_gfx_fill_owned(VM* vm, int argc, Value* argv) {
+    if (argc != 6 || !fixnums(vm, "fill-owned!", argv, 0, 6, -1)) {
+        if (argc != 6) vm_error(vm, "fill-owned!: (fill-owned! id x y w h color)");
+        return VALUE_NIL;
+    }
+    gfx_fill_owned((int)I(0), I(1), I(2), I(3), I(4), (uint32_t)I(5));
+    return VALUE_NIL;
+}
+
+/* (cursor! x y show?) — the software mouse pointer */
+static Value native_gfx_cursor(VM* vm, int argc, Value* argv) {
+    if (argc != 3 || !fixnums(vm, "cursor!", argv, 0, 2, -1)) {
+        if (argc != 3) vm_error(vm, "cursor!: (cursor! x y show?)");
+        return VALUE_NIL;
+    }
+    gfx_cursor((int32_t)I(0), (int32_t)I(1), !is_nil(argv[2]) && !is_false(argv[2]));
+    return VALUE_NIL;
+}
+
+#undef I
 
 /* ── namespace registration ─────────────────────────────────────────────── */
 
@@ -147,6 +257,16 @@ void gfx_register_natives(void) {
     reg(ns, "clear!",      native_gfx_clear);
     reg(ns, "blit-bits!",  native_gfx_blit_bits);
     reg(ns, "copy-rect!",  native_gfx_copy_rect);
+    reg(ns, "surface",       native_gfx_surface);
+    reg(ns, "surface-free!", native_gfx_surface_free);
+    reg(ns, "fill-rect-on!", native_gfx_fill_rect_on);
+    reg(ns, "blit-bits-on!", native_gfx_blit_bits_on);
+    reg(ns, "copy-rect-on!", native_gfx_copy_rect_on);
+    reg(ns, "own!",          native_gfx_own);
+    reg(ns, "owner-at",      native_gfx_owner_at);
+    reg(ns, "present!",      native_gfx_present);
+    reg(ns, "fill-owned!",   native_gfx_fill_owned);
+    reg(ns, "cursor!",       native_gfx_cursor);
 }
 
 /* ── load embedded lib/gfx.beer ─────────────────────────────────────────── */

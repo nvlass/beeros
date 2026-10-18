@@ -150,6 +150,46 @@ as a background task next to the serial REPL and is independent of it:
 Shared on purpose: every definition, and the line editor's history and
 kill ring.
 
+## Window manager (`beer.wm`)
+
+`/lib/beer/wm.beer`, minimal in the spirit of wm2: overlapping windows,
+each a REPL on a `beer.term`, a title tab with a close box. `/etc/init.beer`
+starts it when `/etc/beeros.edn` has `:console {:wm {...}}` (the default;
+`:cols :rows :scale` for new windows), with one window open.
+
+| | |
+|---|---|
+| click the desktop | new REPL window there |
+| click a window | raise it, give it the keyboard |
+| drag the tab | move |
+| click the box in the tab | close |
+| Ctrl-Alt-Enter / Ctrl-Alt-Tab / Ctrl-Alt-W | new / next / close (for when QEMU grabs the mouse) |
+| Ctrl-\, Ctrl-Alt-Esc, Ctrl-C | interrupt the focused window's REPL (as in "Two REPLs") |
+
+From a REPL: `(beer.wm/open! {:x 100 :y 80 :cols 60})`, `(beer.wm/close!)`,
+`(beer.wm/focus! id)`, `@beer.wm/state`.
+
+**Compositing.** Each window draws into its own off-screen surface
+(`beer.gfx/surface`, `fill-rect-on!` / `blit-bits-on!` / `copy-rect-on!`;
+surface 0 is the screen). An owner map in C says which surface each screen
+pixel shows: `restack!` sets it back to front (`own!`) and repaints, and
+`present!` copies a surface to the screen only where it owns the pixels.
+So a terminal's renderer can draw and present at any time without
+painting over the window above it, and scrolling is a copy inside the
+window's own surface. The pointer is a software cursor (`cursor!`) that
+every screen write hides and redraws. A `beer.term` takes `:surface`,
+`:present` (called after each batch it drew) and `:keys` (a channel the
+WM feeds); without them it draws on the screen and reads beer.input.
+
+**Input.** The WM task is the only reader of `beer.input/queue`: pointer
+motion (`:motion` from a mouse, `:abs` from a tablet) moves the cursor,
+buttons click and drag, key events go to the focused window's channel.
+`beer.tty/keyboard-interrupt` sends the interrupt keys to the focused
+window (`beer.term/interrupt-key!`).
+
+Not yet: resizing, a root menu (wm2's hidden-window list), a title from
+the window's namespace, moving windows partly off screen.
+
 ## Fonts and config on disk (planned)
 
 - **Fonts** (`/lib/beer/font.beer`, done): a font is a map `{:width

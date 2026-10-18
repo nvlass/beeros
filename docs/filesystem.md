@@ -151,3 +151,12 @@ make run BOARD=virt-riscv DISK=disk.img
 ```
 
 After write support lands, `e2fsck -fn disk.img` checks what beeros wrote.
+
+## /tmp: a RAM file system
+
+`beer.fs` mounts a `:ram` file system at `/tmp` at boot: a map from paths
+to strings in an atom, directories implied by the paths. It is the only
+writable one so far: `(beer.fs/spit! "/tmp/x" "text")` (or beerlang's
+`spit`, through the `*fs*` hook) writes, append too; `ls`, `slurp`,
+`stat` work as on ext2. Its contents are gone at reboot. Writing to a
+file system without a `:write!` op (ext2) throws `:read-only`.

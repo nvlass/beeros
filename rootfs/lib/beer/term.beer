@@ -360,7 +360,9 @@
 (defn tty
   "A beer.tty for the terminal: keys from read-key, text to the term."
   [t]
-  {:name "term" :read-key (fn [] (read-key t)) :write! (fn [s] (write! t s)) :cols (:cols @t)})
+  {:name "term" :read-key (fn [] (read-key t)) :write! (fn [s] (write! t s))
+   :cols (:cols @t) :rows (:rows @t)
+   :ctrl-c-key! (fn [on?] (swap! (:in @t) (fn [m] (assoc m :ctrl-c-key? on?))))})
 
 (defn interrupt-key!
   "What the terminal's REPL does with an interrupt key (:hard or :ctrl-c);
@@ -409,7 +411,11 @@
         in   (:in @t)]
     (attach-output! t slot)
     (swap! in (fn [m] (assoc m :interrupt
-                             (fn [kind] (when (or (= kind :hard) @busy) (interrupt! me) true)))))
+                             (fn [kind]
+                               (when (or (= kind :hard)
+                                         (and @busy (not (:ctrl-c-key? @in))))
+                                 (interrupt! me)
+                                 true)))))
     (binding [*ns* 'user
               *out* out
               *err* out

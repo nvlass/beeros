@@ -115,7 +115,7 @@
       (= b 9)   {:key :tab :mods no-mods}
       (or (= b 127) (= b 8)) {:key :backspace :mods no-mods}
       (= b 27)  (decode-escape)
-      (= b 0)   nil
+      (= b 0)   {:key :space :mods #{:ctrl}}                     ; C-SPC sends NUL
       (< b 32)  {:key (ctrl-letter b) :mods #{:ctrl}}
       (< b 128) {:char (str (char b))}
       :else     (decode-utf8 b))))
@@ -123,7 +123,8 @@
 ;; ── beer.input keyboards ──────────────────────────────────────────────────
 
 (defn event->keystroke [ev]
-  (when (and (= (:type ev) :key) (:down? ev))
+  (when (and (= (:type ev) :key) (:down? ev)
+             (nil? (get beer.input/modifier-keys (:key ev))))   ; Shift alone is no key
     (let [mods (or (:mods ev) no-mods)
           c    (beer.input/key->char ev)]
       (if (and c (empty? (disj mods :shift)) (not= c "\n") (not= c "\t"))
@@ -170,21 +171,40 @@
           k (if b (decode b) (keyboard-keystroke))]
       (if k k (do (yield) (recur))))))
 
-;; The serial terminal's width, for the line editor's wrapping (we can't
-;; ask the terminal yet): (reset! beer.tty/serial-cols 120)
+;; The serial terminal's size, for the line editor's wrapping and full-
+;; screen programs (we can't ask the terminal yet):
+;; (reset! beer.tty/serial-cols 120) (reset! beer.tty/serial-rows 40)
 (def serial-cols (atom 80))
+(def serial-rows (atom 24))
 
 (def serial
   {:name     "serial0"
    :read-key serial-read-key
    :write!   (fn [s] (print s))
-   :cols     (fn [] @serial-cols)})
+   :cols     (fn [] @serial-cols)
+   :rows     (fn [] @serial-rows)
+   :ctrl-c-key! (fn [on?] (ctrl-c-interrupts! (not on?)))})
 
 ;; The tty of the running task: the serial one unless a REPL binds it
 ;; (binding [beer.tty/*tty* (beer.term/tty t)] ...); spawned tasks inherit it.
 (def ^:dynamic *tty* serial)
 
 (defn read-key [] ((:read-key *tty*)))
+
+(defn dim [tty k dflt]
+  (let [v (get tty k)] (cond (number? v) v (fn? v) (v) :else dflt)))
+
+(defn size
+  "[cols rows] of the tty (default *tty*)."
+  ([] (size *tty*))
+  ([tty] [(dim tty :cols 80) (dim tty :rows 24)]))
+
+(defn ctrl-c-key!
+  "on? true: Ctrl-C reaches the program as a key instead of interrupting
+  (an editor wants it); false: back to interrupting. Ctrl-\\ always
+  interrupts."
+  ([on?] (ctrl-c-key! *tty* on?))
+  ([tty on?] (let [f (:ctrl-c-key! tty)] (when f (f on?)) nil)))
 
 (defn recover!
   "After an interrupt: attributes reset, cursor shown, Ctrl-C interrupting

@@ -1,0 +1,5 @@
+{:name        "beermacs"
+ :version     "0.1.0"
+ :description "A small Emacs for beeros (emacs -nw style): buffers, kill ring, undo, isearch, eval"
+ :paths       ["src"]
+ :main        beermacs.core}

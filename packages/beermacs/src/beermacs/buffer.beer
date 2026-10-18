@@ -1,0 +1,223 @@
+;; beermacs.buffer — the text of a buffer, as data
+;;
+;; A buffer is a map; every function here takes one and returns the new
+;; one, so they are easy to try at a REPL:
+;;
+;;   (def b (new-buffer "x" "hello\nworld" nil))
+;;   (text (insert (end-of-line b) ", there"))   ; "hello, there\nworld"
+;;
+;; :lines is a vector of strings (the text split on newlines: a final
+;; newline is a last empty line), point is :row/:col, :mark is [row col]
+;; or nil, :undo a list of earlier {:lines :row :col}.
+
+(ns beermacs.buffer
+  (:require [beer.string :as s]))
+
+(defn expand-tabs [line]
+  (if (s/includes? line "\t")
+    (loop [i 0 out ""]
+      (if (>= i (count line))
+        out
+        (let [c (subs line i (inc i))]
+          (recur (inc i)
+                 (if (= c "\t")
+                   (str out (apply str (repeat (- 8 (rem (count out) 8)) " ")))
+                   (str out c))))))
+    line))
+
+(defn new-buffer
+  "A buffer named nm holding text (tabs become spaces), visiting file."
+  [nm text file]
+  {:name nm :file file :lines (vec (map expand-tabs (s/split text "\n")))
+   :row 0 :col 0 :goal nil :mark nil :top 0 :left 0 :modified? false :undo ()})
+
+(defn text [b] (s/join "\n" (:lines b)))
+
+(defn line [b r] (nth (:lines b) r))
+(defn cur-line [b] (line b (:row b)))
+(defn last-row [b] (dec (count (:lines b))))
+
+(defn point [b] [(:row b) (:col b)])
+
+(defn goto [b r c]
+  (let [r (max 0 (min r (last-row b)))
+        c (max 0 (min c (count (line b r))))]
+    (assoc b :row r :col c :goal nil)))
+
+(defn before? [[r1 c1] [r2 c2]] (or (< r1 r2) (and (= r1 r2) (< c1 c2))))
+
+(defn ordered [p q] (if (before? q p) [q p] [p q]))
+
+;; ── undo ──────────────────────────────────────────────────────────────────
+
+(def undo-max 200)
+
+(defn snapshot [b]
+  (assoc b :undo (take undo-max (cons {:lines (:lines b) :row (:row b) :col (:col b)} (:undo b)))))
+
+(defn undo [b]
+  (let [u (first (:undo b))]
+    (if u
+      (assoc b :lines (:lines u) :row (:row u) :col (:col u) :undo (rest (:undo b))
+             :modified? true :goal nil)
+      b)))
+
+;; ── text between positions ────────────────────────────────────────────────
+
+(defn text-between
+  "The text from p to q (positions [row col], either order)."
+  [b p q]
+  (let [[[r1 c1] [r2 c2]] (ordered p q)]
+    (if (= r1 r2)
+      (subs (line b r1) c1 c2)
+      (s/join "\n" (concat [(subs (line b r1) c1)]
+                           (map (fn [r] (line b r)) (range (inc r1) r2))
+                           [(subs (line b r2) 0 c2)])))))
+
+(defn delete-between
+  "Remove the text from p to q; point goes to the earlier one."
+  [b p q]
+  (let [[[r1 c1] [r2 c2]] (ordered p q)
+        joined (str (subs (line b r1) 0 c1) (subs (line b r2) c2))
+        ls (:lines b)]
+    (assoc b :lines (vec (concat (subvec ls 0 r1) [joined] (subvec ls (inc r2))))
+           :row r1 :col c1 :goal nil :modified? true)))
+
+(defn insert
+  "Insert string s (may hold newlines) at point; point ends after it."
+  [b text]
+  (let [l (cur-line b) c (:col b) r (:row b)
+        parts (vec (s/split (expand-tabs text) "\n"))
+        n (count parts)
+        before (subs l 0 c) after (subs l c)
+        new (if (= n 1)
+              [(str before (first parts) after)]
+              (vec (concat [(str before (first parts))]
+                           (subvec parts 1 (dec n))
+                           [(str (last parts) after)])))
+        ls (:lines b)]
+    (assoc b :lines (vec (concat (subvec ls 0 r) new (subvec ls (inc r))))
+           :row (+ r (dec n))
+           :col (if (= n 1) (+ c (count (first parts))) (count (last parts)))
+           :goal nil :modified? true)))
+
+;; ── motion ────────────────────────────────────────────────────────────────
+
+(defn forward-char [b]
+  (cond (< (:col b) (count (cur-line b))) (assoc b :col (inc (:col b)) :goal nil)
+        (< (:row b) (last-row b)) (assoc b :row (inc (:row b)) :col 0 :goal nil)
+        :else b))
+
+(defn backward-char [b]
+  (cond (> (:col b) 0) (assoc b :col (dec (:col b)) :goal nil)
+        (> (:row b) 0) (let [r (dec (:row b))] (assoc b :row r :col (count (line b r)) :goal nil))
+        :else b))
+
+(defn vertical [b dr]
+  (let [goal (or (:goal b) (:col b))
+        r (max 0 (min (+ (:row b) dr) (last-row b)))]
+    (assoc b :row r :col (min goal (count (line b r))) :goal goal)))
+
+(defn next-line [b] (vertical b 1))
+(defn previous-line [b] (vertical b -1))
+(defn beginning-of-line [b] (assoc b :col 0 :goal nil))
+(defn end-of-line [b] (assoc b :col (count (cur-line b)) :goal nil))
+(defn beginning-of-buffer [b] (goto b 0 0))
+(defn end-of-buffer [b] (goto b (last-row b) (count (line b (last-row b)))))
+
+(defn word-char? [ch] (not (s/includes? " \t\n()[]{}\"',`;@^~" ch)))
+
+(defn char-at
+  "The character at [r c] as a string; \"\\n\" at the end of a line."
+  [b r c]
+  (let [l (line b r)] (if (< c (count l)) (subs l c (inc c)) "\n")))
+
+(defn at-end? [b] (and (= (:row b) (last-row b)) (= (:col b) (count (cur-line b)))))
+(defn at-start? [b] (and (= (:row b) 0) (= (:col b) 0)))
+
+(defn forward-word [b]
+  (let [b (loop [b b] (if (or (at-end? b) (word-char? (char-at b (:row b) (:col b)))) b (recur (forward-char b))))]
+    (loop [b b] (if (or (at-end? b) (not (word-char? (char-at b (:row b) (:col b))))) b (recur (forward-char b))))))
+
+(defn backward-word [b]
+  (let [prev (fn [b] (let [p (backward-char b)] (char-at p (:row p) (:col p))))
+        b (loop [b b] (if (or (at-start? b) (word-char? (prev b))) b (recur (backward-char b))))]
+    (loop [b b] (if (or (at-start? b) (not (word-char? (prev b)))) b (recur (backward-char b))))))
+
+;; ── editing ───────────────────────────────────────────────────────────────
+
+(defn delete-char [b]
+  (if (at-end? b) b (delete-between b (point b) (point (forward-char b)))))
+
+(defn delete-backward-char [b]
+  (if (at-start? b) b (delete-between b (point (backward-char b)) (point b))))
+
+(defn indentation [l] (count (take-while (fn [c] (= c " ")) (s/split l ""))))
+
+(defn newline-and-indent [b]
+  (insert b (str "\n" (apply str (repeat (indentation (subs (cur-line b) 0 (:col b))) " ")))))
+
+(defn kill-line-text
+  "[killed-text new-buffer] for C-k: the rest of the line, or the newline
+  when point is at its end."
+  [b]
+  (let [here (point b)
+        to   (if (= (:col b) (count (cur-line b)))
+               (point (forward-char b))
+               [(:row b) (count (cur-line b))])]
+    [(text-between b here to) (delete-between b here to)]))
+
+;; ── search ────────────────────────────────────────────────────────────────
+
+(defn find-in-line [l pat from]
+  (let [n (count pat) m (count l)]
+    (loop [i from]
+      (cond (> (+ i n) m) nil
+            (= (subs l i (+ i n)) pat) i
+            :else (recur (inc i))))))
+
+(defn search-forward
+  "[row col] of the first match of pat at or after [row col], or nil.
+  Case-insensitive when pat has no capitals."
+  [b pat [row col]]
+  (let [fold? (= pat (s/lower-case pat))
+        pat   (if fold? (s/lower-case pat) pat)
+        prep  (fn [l] (if fold? (s/lower-case l) l))]
+    (loop [r row c col]
+      (when (<= r (last-row b))
+        (let [i (find-in-line (prep (line b r)) pat c)]
+          (if i [r i] (recur (inc r) 0)))))))
+
+;; ── s-expressions ─────────────────────────────────────────────────────────
+
+(def closers {")" "(" "]" "[" "}" "{"})
+
+(defn sexp-before
+  "Start [row col] of the s-expression ending at point, or nil."
+  [b]
+  (let [prev (fn [p] (let [q (backward-char (goto b (first p) (second p)))] [(:row q) (:col q)]))
+        ch   (fn [p] (char-at b (first p) (second p)))
+        start [0 0]
+        ;; skip whitespace back
+        p (loop [p (point b)]
+            (if (= p start) p
+              (let [q (prev p)] (if (s/includes? " \n" (ch q)) (recur q) p))))]
+    (if (= p start)
+      nil
+      (let [q (prev p) c (ch q)]
+        (cond
+          (get closers c)
+          (loop [q q depth 0]
+            (let [c (ch q)
+                  depth (cond (get closers c) (inc depth)
+                              (s/includes? "([{" c) (dec depth)
+                              :else depth)]
+              (cond (= depth 0) q
+                    (= q start) nil
+                    :else (recur (prev q) depth))))
+          (= c "\"")
+          (loop [q (prev q)]
+            (cond (= (ch q) "\"") q (= q start) nil :else (recur (prev q))))
+          :else
+          (loop [q q]
+            (if (or (= q start) (not (word-char? (ch (prev q))))) q (recur (prev q)))))))))

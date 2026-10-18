@@ -1,0 +1,418 @@
+;; beermacs — a small Emacs for beeros, in the spirit of `emacs -nw`
+;;
+;; Runs on the tty it is started from (a beer.wm window, the full-screen
+;; terminal or serial):  (beer.pkg/run "beermacs" "/tmp/notes.txt")
+;;
+;; Keymaps are plain maps from key names ("C-f", "M-x", "RET", "a") to
+;; command fns of the editor state, so you can rebind from a REPL:
+;;   (swap! beermacs.core/global-map assoc "C-z" beermacs.core/undo)
+;;
+;; Files under /tmp can be saved (a RAM file system); the disk is
+;; read-only so far.
+
+(ns beermacs.core
+  (:require [beer.string :as s]
+            [beermacs.buffer :as b]))
+
+(def esc (str (char 27)))
+(def csi (str esc "["))
+
+;; ── editor state ──────────────────────────────────────────────────────────
+;; {:buffers {name buffer} :current name :kill "" :msg "" :quit? false
+;;  :last nil :screen [rows drawn last time]}
+
+(defn buf [ed] (get (:buffers ed) (:current ed)))
+(defn update-buf [ed f] (assoc-in ed [:buffers (:current ed)] (f (buf ed))))
+(defn message [ed m] (assoc ed :msg m))
+
+(defn unique-name [ed nm]
+  (if (nil? (get (:buffers ed) nm))
+    nm
+    (loop [i 2] (let [n (str nm "<" i ">")] (if (get (:buffers ed) n) (recur (inc i)) n)))))
+
+(defn add-buffer [ed bf]
+  (let [nm (unique-name ed (:name bf))]
+    (assoc (assoc-in ed [:buffers nm] (assoc bf :name nm)) :current nm)))
+
+;; ── display ───────────────────────────────────────────────────────────────
+
+(defn text-rows [ed] (- (second (:size ed)) 2))
+
+(defn scroll-to-point
+  "Keep point on screen: recenter vertically, shift horizontally."
+  [ed]
+  (let [[cols _] (:size ed)
+        h  (text-rows ed)
+        bf (buf ed)
+        top (cond (< (:row bf) (:top bf)) (max 0 (- (:row bf) (quot h 2)))
+                  (>= (:row bf) (+ (:top bf) h)) (max 0 (- (:row bf) (quot h 2)))
+                  :else (:top bf))
+        left (cond (< (:col bf) (:left bf)) (max 0 (- (:col bf) (quot cols 2)))
+                   (>= (:col bf) (+ (:left bf) cols -1)) (- (:col bf) (quot cols 2))
+                   :else (:left bf))]
+    (update-buf ed (fn [x] (assoc x :top top :left left)))))
+
+(defn visible [l left cols]
+  (let [n (count l)
+        part (if (>= left n) "" (subs l left (min n (+ left cols))))]
+    (if (> n (+ left cols)) (str (subs part 0 (dec cols)) "$") part)))
+
+(defn pad [x n] (if (>= (count x) n) (subs x 0 n) (str x (apply str (repeat (- n (count x)) " ")))))
+
+(defn mode-line [ed cols]
+  (let [bf (buf ed)]
+    (str csi "7m"
+         (pad (str "-" (if (:modified? bf) "**" "--") "- " (:name bf)
+                   "   L" (inc (:row bf)) " C" (:col bf)
+                   (if (:file bf) (str "   " (:file bf)) "")
+                   "   (beermacs)")
+              cols)
+         csi "0m")))
+
+(defn screen-rows
+  "What each screen row should show: text rows, the mode line, the
+  minibuffer."
+  [ed]
+  (let [[cols rows] (:size ed)
+        bf (buf ed) h (text-rows ed)]
+    (conj (vec (concat (map (fn [i] (let [r (+ (:top bf) i)]
+                                      (if (<= r (b/last-row bf))
+                                        (visible (b/line bf r) (:left bf) cols)
+                                        "")))
+                            (range h))
+                       [(mode-line ed cols)]))
+          (visible (or (:prompt ed) (:msg ed) "") 0 cols))))
+
+(defn redisplay!
+  "Rewrite the rows that changed since last time, then place the cursor."
+  [ed]
+  (let [ed   (scroll-to-point ed)
+        new  (screen-rows ed)
+        old  (:screen ed)
+        bf   (buf ed)
+        cur  (if (:prompt ed)
+               [(dec (count new)) (count (:prompt ed))]
+               [(- (:row bf) (:top bf)) (- (:col bf) (:left bf))])
+        out  (apply str
+                    (map (fn [i] (let [line (nth new i)]
+                                   (if (= line (get old i)) ""
+                                       (str csi (inc i) ";1H" line csi "K"))))
+                         (range (count new))))]
+    (beer.tty/write! (str csi "?25l" out csi (inc (first cur)) ";" (inc (second cur)) "H" csi "?25h"))
+    (assoc ed :screen new)))
+
+;; ── keys ──────────────────────────────────────────────────────────────────
+
+(def key-names {:enter "RET" :tab "TAB" :backspace "DEL" :escape "ESC" :space "SPC"
+                :delete "<delete>" :left "<left>" :right "<right>" :up "<up>" :down "<down>"
+                :home "<home>" :end "<end>" :page-up "<prior>" :page-down "<next>"})
+
+(defn key-name
+  "\"C-x\", \"M-f\", \"RET\", \"a\" for a beer.tty keystroke."
+  [k]
+  (if (:char k)
+    (:char k)
+    (let [m  (or (:mods k) #{})
+          ;; a keyboard chord names the key's character, shifted: M-S-, is M-<
+          ch (beer.input/key->char {:type :key :down? true :key (:key k)
+                                    :mods (if (contains? m :shift) #{:shift} #{})})]
+      (str (if (contains? m :ctrl) "C-" "") (if (contains? m :alt) "M-" "")
+           (or (get key-names (:key k))
+               (when (and ch (not= ch " ") (not= ch "\n") (not= ch "\t")) ch)
+               (name (:key k)))))))
+
+(defn read-key [] (key-name (beer.tty/read-key)))
+
+;; ── the minibuffer ────────────────────────────────────────────────────────
+
+(defn read-minibuffer
+  "Read a line in the minibuffer after prompt; nil on C-g."
+  [ed prompt initial]
+  (loop [ed ed input initial]
+    (let [ed (redisplay! (assoc ed :prompt (str prompt input)))
+          k  (read-key)]
+      (cond (= k "RET") [(assoc ed :prompt nil) input]
+            (= k "C-g") [(message (assoc ed :prompt nil) "Quit") nil]
+            (= k "DEL") (recur ed (if (> (count input) 0) (subs input 0 (dec (count input))) input))
+            (= (count k) 1) (recur ed (str input k))
+            (= k "SPC") (recur ed (str input " "))
+            :else (recur ed input)))))
+
+(defn y-or-n? [ed question]
+  (loop [ed ed]
+    (let [ed (redisplay! (assoc ed :prompt (str question " (y or n) ")))
+          k  (read-key)]
+      (cond (= k "y") [(assoc ed :prompt nil) true]
+            (or (= k "n") (= k "C-g")) [(assoc ed :prompt nil) false]
+            :else (recur ed)))))
+
+;; ── commands: (fn [ed]) -> ed ─────────────────────────────────────────────
+
+(defn motion [f] (fn [ed] (update-buf ed f)))
+
+(defn edit
+  "A command that changes the text: undo gets a snapshot first (one for a
+  run of self-inserts)."
+  [f]
+  (fn [ed] (update-buf ed (fn [x] (f (if (= (:last ed) :self-insert) x (b/snapshot x)))))))
+
+(defn self-insert [ed k] (assoc ((edit (fn [x] (b/insert x k))) ed) :this :self-insert))
+
+(def forward-char (motion b/forward-char))
+(def backward-char (motion b/backward-char))
+(def next-line (motion b/next-line))
+(def previous-line (motion b/previous-line))
+(def beginning-of-line (motion b/beginning-of-line))
+(def end-of-line (motion b/end-of-line))
+(def forward-word (motion b/forward-word))
+(def backward-word (motion b/backward-word))
+(def beginning-of-buffer (motion (fn [x] (b/beginning-of-buffer (assoc x :mark (b/point x))))))
+(def end-of-buffer (motion (fn [x] (b/end-of-buffer (assoc x :mark (b/point x))))))
+
+(defn scroll-up [ed] (update-buf ed (fn [x] (b/vertical x (max 1 (- (text-rows ed) 2))))))
+(defn scroll-down [ed] (update-buf ed (fn [x] (b/vertical x (- (max 1 (- (text-rows ed) 2)))))))
+
+(defn recenter [ed]
+  (assoc (update-buf ed (fn [x] (assoc x :top (max 0 (- (:row x) (quot (text-rows ed) 2))))))
+         :screen []))
+
+(def delete-char (edit b/delete-char))
+(def delete-backward-char (edit b/delete-backward-char))
+(def newline (edit b/newline-and-indent))
+(def open-line (edit (fn [x] (b/goto (b/insert x "\n") (:row x) (:col x)))))
+(def indent (edit (fn [x] (b/insert x "  "))))
+
+(defn kill-line [ed]
+  (let [[killed nb] (b/kill-line-text (b/snapshot (buf ed)))]
+    (assoc (update-buf ed (fn [_] nb))
+           :kill (if (= (:last ed) :kill) (str (:kill ed) killed) killed)
+           :this :kill)))
+
+(defn kill-word [ed]
+  (let [x (buf ed) to (b/point (b/forward-word x))]
+    (assoc (update-buf ed (fn [_] (b/delete-between (b/snapshot x) (b/point x) to)))
+           :kill (b/text-between x (b/point x) to))))
+
+(defn backward-kill-word [ed]
+  (let [x (buf ed) from (b/point (b/backward-word x))]
+    (assoc (update-buf ed (fn [_] (b/delete-between (b/snapshot x) from (b/point x))))
+           :kill (b/text-between x from (b/point x)))))
+
+(defn set-mark [ed] (message (update-buf ed (fn [x] (assoc x :mark (b/point x)))) "Mark set"))
+
+(defn with-region [ed f]
+  (let [x (buf ed)]
+    (if (:mark x) (f x (:mark x) (b/point x)) (message ed "The mark is not set now"))))
+
+(defn kill-region [ed]
+  (with-region ed (fn [x m p] (assoc (update-buf ed (fn [_] (assoc (b/delete-between (b/snapshot x) m p) :mark nil)))
+                                     :kill (b/text-between x m p)))))
+
+(defn copy-region [ed]
+  (with-region ed (fn [x m p] (message (assoc ed :kill (b/text-between x m p)) "Copied"))))
+
+(defn yank [ed]
+  (update-buf ed (fn [x] (b/insert (assoc (b/snapshot x) :mark (b/point x)) (:kill ed)))))
+
+(def undo (motion (fn [x] (b/undo x))))
+
+(defn keyboard-quit [ed] (message (update-buf ed (fn [x] (assoc x :mark nil))) "Quit"))
+
+;; ── search ────────────────────────────────────────────────────────────────
+
+(defn isearch-forward
+  "Incremental search: type to extend, C-s for the next match, DEL to
+  back up, RET or any other key to stop there, C-g to go back."
+  [ed]
+  (let [start (b/point (buf ed))]
+    (loop [ed ed pat "" from start stack []]
+      (let [found (when (not= pat "") (b/search-forward (buf ed) pat from))
+            ed (if found (update-buf ed (fn [x] (b/goto x (first found) (+ (second found) (count pat))))) ed)
+            ed (redisplay! (assoc ed :prompt (str (if (or found (= pat "")) "" "Failing ") "I-search: " pat)))
+            k  (read-key)]
+        (cond
+          (= k "C-g") (assoc (update-buf ed (fn [x] (b/goto x (first start) (second start)))) :prompt nil)
+          (= k "C-s") (recur ed pat (if found [(first found) (inc (second found))] from) (conj stack [pat from]))
+          (= k "DEL") (if (empty? stack)
+                        (recur ed "" start stack)
+                        (let [[p f] (last stack)] (recur ed p f (pop stack))))
+          (= (count k) 1) (recur ed (str pat k) from (conj stack [pat from]))
+          (= k "SPC") (recur ed (str pat " ") from (conj stack [pat from]))
+          :else (message (assoc (update-buf ed (fn [x] (assoc x :mark start))) :prompt nil)
+                         (if (= k "RET") "Mark saved where search started" "")))))))
+
+;; ── evaluation ────────────────────────────────────────────────────────────
+
+(defn eval-string
+  "[value-string output] of reading and evaluating s."
+  [text]
+  (let [[out slot] (beer.tty/capture-stream)]
+    (try
+      (let [v (binding [*out* out *err* out]
+                (try (pr-str (eval (read-string text)))
+                     (catch e (str "Error: " (if (map? e) (or (:message e) (pr-str e)) (pr-str e))))))]
+        [v (or (beer.tty/take-output slot) "")])
+      (finally (beer.tty/release-output! slot)))))
+
+(defn last-sexp [ed]
+  (let [x (buf ed) p (b/sexp-before x)]
+    (when p (b/text-between x p (b/point x)))))
+
+(defn eval-last-sexp [ed]
+  (let [text (last-sexp ed)]
+    (if (nil? text)
+      (message ed "No sexp before point")
+      (let [[v out] (eval-string text)
+            first-out (first (filter (fn [l] (not= (s/trim l) "")) (s/split out "\n")))]
+        (message ed (str (if first-out (str (s/trim first-out) "  ") "") "=> " v))))))
+
+(defn eval-print-last-sexp [ed]
+  (let [text (last-sexp ed)]
+    (if (nil? text)
+      (message ed "No sexp before point")
+      (let [[v out] (eval-string text)]
+        (update-buf ed (fn [x] (b/insert (b/snapshot x) (str "\n" (s/replace out "\r" "") v "\n"))))))))
+
+(defn eval-expression [ed]
+  (let [[ed text] (read-minibuffer ed "Eval: " "")]
+    (if (or (nil? text) (= text ""))
+      ed
+      (message ed (str "=> " (first (eval-string text)))))))
+
+;; ── files and buffers ─────────────────────────────────────────────────────
+
+(defn basename [path] (last (s/split path "/")))
+
+(defn dirname [path]
+  (let [parts (s/split path "/")]
+    (str (s/join "/" (butlast parts)) "/")))
+
+(defn find-file-noselect [ed path]
+  (let [existing (some (fn [bf] (when (= (:file bf) path) (:name bf))) (vals (:buffers ed)))]
+    (if existing
+      (assoc ed :current existing)
+      (let [text (try (beer.fs/slurp path) (catch e nil))]
+        (message (add-buffer ed (b/new-buffer (basename path) (or text "") path))
+                 (if text (str "Read " path) "(New file)"))))))
+
+(defn default-dir [ed] (let [f (:file (buf ed))] (if f (dirname f) "/tmp/")))
+
+(defn find-file [ed]
+  (let [[ed path] (read-minibuffer ed "Find file: " (default-dir ed))]
+    (if (or (nil? path) (= path "")) ed (find-file-noselect ed path))))
+
+(defn write-to [ed path]
+  (try
+    (beer.fs/spit! path (b/text (buf ed)))
+    (message (update-buf ed (fn [x] (assoc x :file path :modified? false))) (str "Wrote " path))
+    (catch e (message ed (str "Cannot save: " (if (map? e) (:message e) (pr-str e)))))))
+
+(defn save-buffer [ed]
+  (let [x (buf ed)]
+    (cond (:file x) (if (:modified? x) (write-to ed (:file x)) (message ed "(No changes need to be saved)"))
+          :else (let [[ed path] (read-minibuffer ed "File to save in: " (default-dir ed))]
+                  (if (or (nil? path) (= path "")) ed (write-to ed path))))))
+
+(defn write-file [ed]
+  (let [[ed path] (read-minibuffer ed "Write file: " (default-dir ed))]
+    (if (or (nil? path) (= path "")) ed
+        (write-to (update-buf ed (fn [x] (assoc x :name (basename path)))) path))))
+
+(defn other-buffer [ed]
+  (or (first (filter (fn [n] (not= n (:current ed))) (sort (keys (:buffers ed))))) "*scratch*"))
+
+(defn switch-to-buffer [ed]
+  (let [dflt (other-buffer ed)
+        [ed nm] (read-minibuffer ed (str "Switch to buffer (default " dflt "): ") "")]
+    (cond (nil? nm) ed
+          (= nm "") (assoc ed :current dflt)
+          (get (:buffers ed) nm) (assoc ed :current nm)
+          :else (add-buffer ed (b/new-buffer nm "" nil)))))
+
+(defn kill-buffer [ed]
+  (let [nm (:current ed)
+        ed (assoc ed :buffers (dissoc (:buffers ed) nm))]
+    (if (empty? (:buffers ed))
+      (add-buffer ed (b/new-buffer "*scratch*" "" nil))
+      (assoc ed :current (first (sort (keys (:buffers ed))))))))
+
+(defn list-buffers [ed]
+  (message ed (s/join "  " (map (fn [n] (str n (if (:modified? (get (:buffers ed) n)) "*" "")))
+                                (sort (keys (:buffers ed)))))))
+
+(defn quit [ed]
+  (let [modified (filter (fn [x] (and (:file x) (:modified? x))) (vals (:buffers ed)))]
+    (if (empty? modified)
+      (assoc ed :quit? true)
+      (let [[ed yes?] (y-or-n? ed "Modified buffers exist; exit anyway?")]
+        (if yes? (assoc ed :quit? true) ed)))))
+
+;; ── keymaps ───────────────────────────────────────────────────────────────
+
+(def ctl-x-map
+  (atom {"C-f" find-file "C-s" save-buffer "C-w" write-file "b" switch-to-buffer
+         "k" kill-buffer "C-b" list-buffers "C-c" quit "C-e" eval-last-sexp "u" undo}))
+
+(def global-map
+  (atom {"C-f" forward-char "<right>" forward-char "C-b" backward-char "<left>" backward-char
+         "C-n" next-line "<down>" next-line "C-p" previous-line "<up>" previous-line
+         "C-a" beginning-of-line "<home>" beginning-of-line "C-e" end-of-line "<end>" end-of-line
+         "M-f" forward-word "M-b" backward-word "M-<" beginning-of-buffer "M->" end-of-buffer
+         "C-v" scroll-up "<next>" scroll-up "M-v" scroll-down "<prior>" scroll-down
+         "C-l" recenter "C-d" delete-char "<delete>" delete-char "DEL" delete-backward-char
+         "RET" newline "C-o" open-line "TAB" indent "C-k" kill-line "M-d" kill-word
+         "M-DEL" backward-kill-word "C-SPC" set-mark "C-@" set-mark "C-w" kill-region
+         "M-w" copy-region "C-y" yank "C-/" undo "C-_" undo "C--" undo "C-g" keyboard-quit
+         "C-s" isearch-forward "C-j" eval-print-last-sexp "M-:" eval-expression}))
+
+(defn lookup
+  "The command for key k (reading more keys after C-x or ESC), or a
+  [:self-insert char], or nil."
+  [k]
+  (cond
+    (= k "C-x") (let [k2 (read-key)] (get @ctl-x-map k2))
+    (= k "ESC") (get @global-map (str "M-" (read-key)))
+    (get @global-map k) (get @global-map k)
+    (= (count k) 1) [:self-insert k]
+    (= k "SPC") [:self-insert " "]
+    :else nil))
+
+(defn command-loop [ed]
+  (loop [ed ed]
+    (if (:quit? ed)
+      ed
+      (let [ed (redisplay! (assoc ed :size (beer.tty/size)))
+            k  (read-key)
+            cmd (lookup k)
+            ed (assoc ed :msg "" :this nil)
+            ed (try
+                 (cond (vector? cmd) (self-insert ed (second cmd))
+                       cmd (cmd ed)
+                       :else (message ed (str k " is undefined")))
+                 (catch e (message ed (str "Error: " (if (map? e) (:message e) (pr-str e))))))]
+        (recur (assoc ed :last (:this ed)))))))
+
+(def scratch-text
+  ";; This buffer is for text that is not saved, and for beerlang evaluation.
+;; C-x C-e evaluates the form before point, C-j inserts its value.
+;; C-x C-f opens a file (/tmp is writable), C-x C-c quits.
+
+")
+
+(def last-state (atom nil))   ; the editor state at exit, for a look at the REPL
+
+(defn -main
+  "Edit files (or *scratch*); returns when you quit with C-x C-c."
+  [& files]
+  (let [ed {:buffers {} :current nil :kill "" :msg "" :quit? false :last nil
+            :screen [] :size (beer.tty/size)}
+        ed (add-buffer ed (b/end-of-buffer (b/new-buffer "*scratch*" scratch-text nil)))
+        ed (reduce find-file-noselect ed files)]
+    (beer.tty/ctrl-c-key! true)
+    (beer.tty/write! (str csi "H" csi "2J"))
+    (try
+      (reset! last-state (command-loop ed))
+      (finally
+        (beer.tty/ctrl-c-key! false)
+        (beer.tty/write! (str csi "0m" csi "H" csi "2J" csi "?25h"))))
+    nil))

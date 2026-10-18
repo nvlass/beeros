@@ -140,7 +140,7 @@ DISK_SIZE  ?= 16M
 DISK_IMG    = build/disk.img
 ROOTFS_STAGE = build/rootfs
 ROOTFS_BEERLANG_LIBS = string json test digest crypto tar
-ROOTFS_DIRS = bin etc lib/beer pkg share/fonts var
+ROOTFS_DIRS = bin etc lib/beer pkg share/fonts tmp var
 
 disk: $(DISK_IMG)
 

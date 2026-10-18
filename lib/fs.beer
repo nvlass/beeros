@@ -8,13 +8,55 @@
 
 (ns beer.fs)
 
+;; ── ram: a writable file system in memory (/tmp) ─────────────────────────
+;; {:type :ram :name n :files (atom {"/a/b.txt" "text"})}: directories are
+;; implied by the paths of the files in them. Gone at reboot.
+
+(defn ram-new [nm] {:type :ram :name nm :files (atom {})})
+
+(defn ram-fail! [path reason]
+  (throw (ex-info (str "fs: " path ": " (name reason)) {:path path :reason reason})))
+
+(defn ram-dir? [fs path]
+  (or (= path "/")
+      (let [pre (str path "/")]
+        (some (fn [p] (beer.string/starts-with? p pre)) (keys @(:files fs))))))
+
+(defn ram-stat [fs path]
+  (let [s (get @(:files fs) path)]
+    (cond s {:type :file :size (count (beer.bytes/from-string s))}
+          (ram-dir? fs path) {:type :dir :size 0}
+          :else (ram-fail! path :not-found))))
+
+(defn ram-ls [fs path]
+  (let [pre (if (= path "/") "/" (str path "/"))]
+    (when (not (ram-dir? fs path)) (ram-fail! path :not-a-directory))
+    (sort (distinct (map (fn [p] (first (beer.string/split (subs p (count pre)) "/")))
+                         (filter (fn [p] (beer.string/starts-with? p pre)) (keys @(:files fs))))))))
+
+(defn ram-slurp [fs path]
+  (or (get @(:files fs) path)
+      (ram-fail! path (if (ram-dir? fs path) :is-a-directory :not-found))))
+
+(defn ram-write! [fs path s append?]
+  (when (ram-dir? fs path) (ram-fail! path :is-a-directory))
+  (swap! (:files fs) (fn [m] (assoc m path (if append? (str (get m path "") s) s))))
+  nil)
+
 (def impls
   {:ext2 {:ls         beer.ext2/ls
           :slurp      beer.ext2/slurp
           :read-bytes beer.ext2/read-bytes
           :stat       beer.ext2/stat
           :lstat      beer.ext2/lstat
-          :readlink   beer.ext2/readlink}})
+          :readlink   beer.ext2/readlink}
+   :ram  {:ls         ram-ls
+          :slurp      ram-slurp
+          :read-bytes (fn [fs path] (beer.bytes/from-string (ram-slurp fs path)))
+          :stat       ram-stat
+          :lstat      ram-stat
+          :readlink   (fn [fs path] (ram-fail! path :not-a-link))
+          :write!     ram-write!}})
 
 (def mount-table (atom {}))
 
@@ -145,9 +187,19 @@
 (defn hook-read [path]
   (try (slurp path) (catch e nil)))
 
-(defn hook-write! [path s append?]
-  (throw (ex-info (str "fs: " path ": file systems are read-only so far")
-                  {:path path :reason :read-only})))
+(defn spit!
+  "Write string s to path (append? to add to it); only file systems with a
+  :write! op (ram, /tmp) can, ext2 is read-only so far."
+  ([path s] (spit! path s false))
+  ([path s append?]
+   (let [[fs rel] (locate path)
+         w (get (get impls (:type fs)) :write!)]
+     (when (nil? w)
+       (throw (ex-info (str "fs: " path ": read-only file system (" (name (:type fs)) ")")
+                       {:path path :reason :read-only})))
+     (w fs rel s append?))))
+
+(defn hook-write! [path s append?] (spit! path s append?))
 
 (def beer.core/*fs* {:read hook-read :write! hook-write!})
 (def beer.core/*load-path* ["/lib/"])
@@ -161,7 +213,8 @@
                     (sort (beer.blk/devices)))]
     (when found
       (mount! "/" (second found))
-      (println (str "[beeros] mounted " (first found) " (ext2) at /")))))
+      (println (str "[beeros] mounted " (first found) " (ext2) at /")))
+    (mount! "/tmp" (ram-new "tmp"))))
 
 (def init-file "/etc/init.beer")
 

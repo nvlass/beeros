@@ -62,7 +62,8 @@ beeros/
 ├── rootfs/            ← root filesystem contents (etc/init.beer, etc/beeros.edn, lib/, bin/)
 │   └── lib/beer/      ← term.beer (beer.term: VT100 emulator + REPL), font.beer (PSF fonts),
 │                         wm.beer (beer.wm: window manager)
-├── packages/<name>/   ← sample packages (beer.edn, src/, assets/) → /pkg/<name>.tar
+├── packages/<name>/   ← packages (beer.edn, src/, assets/) → /pkg/<name>.tar:
+│                         hello (sample), beermacs (editor, docs/beermacs.md)
 ├── scripts/qemu-drive.py ← scripted REPL + monitor/QMP input for QEMU tests
 └── Makefile
 ```
@@ -204,7 +205,8 @@ ext2, chosen over FAT32/littlefs/etc. — comparison and staged plan in
 at boot and offers `ls`/`slurp`/`stat`/`mount!` on absolute paths. It
 installs beerlang's file hook `beer.core/*fs*` and sets `*load-path*` to
 `["/lib/"]`, so beerlang's own `require`/`load-file`/`slurp` read from it
-(see `docs/filesystem.md`). `/etc/init.beer` runs last at boot
+(see `docs/filesystem.md`). `/tmp` is a RAM file system (`:type :ram`,
+writable: `beer.fs/spit!`, beerlang's `spit`), the only writable one so far. `/etc/init.beer` runs last at boot
 (`beer_run_init()`, after gfx) and starts the terminal REPL. Refuses incompat features other than `filetype` (so ext3/4
 images are rejected, not misread). Build images with e2fsprogs
 (`brew install e2fsprogs`, keg-only in `/opt/homebrew/opt/e2fsprogs/sbin`):

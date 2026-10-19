@@ -61,7 +61,7 @@ beeros/
 │   └── gfx.beer       ← beerlang drawing library
 ├── rootfs/            ← root filesystem contents (etc/init.beer, etc/beeros.edn, lib/, bin/)
 │   └── lib/beer/      ← term.beer (beer.term: VT100 emulator + REPL), font.beer (PSF fonts),
-│                         wm.beer (beer.wm: window manager)
+│                         wm.beer (beer.wm: window manager), help.beer (beer.help: docs browser)
 ├── packages/<name>/   ← packages (beer.edn, src/, assets/) → /pkg/<name>.tar:
 │                         hello (sample), beermacs (editor, docs/beermacs.md)
 ├── scripts/qemu-drive.py ← scripted REPL + monitor/QMP input for QEMU tests
@@ -278,6 +278,12 @@ composited through a C owner map (`own!`, `present!`, `fill-owned!`;
 `kernel/gfx.c`), a software cursor (`cursor!`). The WM task alone reads
 `beer.input/queue` and feeds keys to the focused window's channel.
 docs/console.md "Window manager".
+
+**Help.** `beer.help` (`rootfs/lib/beer/help.beer`): `describe`, `apropos`,
+`namespaces`, `browse` (a tty app: namespaces → names → docstrings and
+values, `docs/*.md` copied to `/share/doc` with `ns/name` links). F1 or
+Ctrl-Alt-H in the WM opens it in a window (`beer.wm/open! {:run f}`).
+Docstrings are what there is to browse: give new public fns one.
 
 ## Graphics driver (`beer.gfx`)
 

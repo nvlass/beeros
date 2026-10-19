@@ -9,6 +9,7 @@
 ;;   click the desktop: new REPL    Ctrl-Alt-Enter  new REPL
 ;;   click a window: raise, focus   Ctrl-Alt-Tab    next window
 ;;   drag the tab: move             Ctrl-Alt-W      close
+;;                                  F1, Ctrl-Alt-H  help (beer.help)
 ;;   click the box in the tab: close
 ;;
 ;; Every window draws into its own beer.gfx surface; the screen shows a
@@ -100,7 +101,9 @@
     nil))
 
 (defn open!
-  "A new REPL window; options as for start! plus :x :y :title."
+  "A new window running a REPL, or (:run opts), a fn of no arguments,
+  with the window's terminal as its console (the window closes when it
+  returns). Options as for start! plus :x :y :title :run."
   ([] (open! {}))
   ([opts]
    (let [o     (merge (:opts @state) opts)
@@ -124,7 +127,13 @@
                  :term t :keys keys}]
        (swap! state (fn [st] (assoc st :next (inc n) :windows (conj (:windows st) win))))
        (beer.term/start! t)
-       (let [r (spawn (fn [] (beer.term/repl t)))]
+       (let [run (:run o)
+             r (spawn (fn []
+                        (if run
+                          (do (try (beer.term/with-term t run)
+                                   (catch e nil))
+                              (close! id))
+                          (beer.term/repl t))))]
          (swap! (:in @t) (fn [m] (assoc m :repl r))))
        (focus! id)
        id))))
@@ -188,14 +197,31 @@
       (move! id (- px ox) (- py oy))
       (restack!))))
 
+(defn help!
+  "Raise the help window, opening it (beer.help/browse) if there is none."
+  []
+  (let [w (some (fn [w] (when (:help? w) w)) (:windows @state))]
+    (if w
+      (focus! (:id w))
+      (do (require 'beer.help)
+          (let [id (open! {:title "help" :cols 72 :rows 30 :x 400 :y 60
+                           :run (fn [] ((eval 'beer.help/browse)))})]
+            (swap! state (fn [st] (assoc st :windows (vec (map (fn [w] (if (= (:id w) id) (assoc w :help? true) w))
+                                                              (:windows st)))))))))
+    nil))
+
 (defn wm-key?
-  "Ctrl-Alt-Enter/Tab/W; true if it was one (and it's done)."
+  "F1, Ctrl-Alt-Enter/Tab/W/H; true if it was one (and it's done)."
   [ev]
-  (let [m (or (:mods ev) #{})]
-    (when (and (:down? ev) (contains? m :ctrl) (contains? m :alt))
-      (cond (= (:key ev) :enter) (do (open!) true)
-            (= (:key ev) :tab)   (do (next-window!) true)
-            (= (:key ev) :w)     (do (close!) true)
+  (let [m (or (:mods ev) #{}) k (:key ev)]
+    (when (:down? ev)
+      (cond (and (= k :f1) (empty? m)) (do (help!) true)
+            (and (contains? m :ctrl) (contains? m :alt))
+            (cond (= k :enter) (do (open!) true)
+                  (= k :tab)   (do (next-window!) true)
+                  (= k :w)     (do (close!) true)
+                  (= k :h)     (do (help!) true)
+                  :else false)
             :else false))))
 
 (defn handle! [ev]

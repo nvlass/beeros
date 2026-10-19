@@ -1,0 +1,249 @@
+;; beer.help — documentation for everything loaded: namespaces, their
+;; public names and docstrings, and the docs pages in /share/doc.
+;;
+;; At a REPL:
+;;   (beer.help/describe 'beer.fs/ls)     ; a name: doc, kind, value
+;;   (beer.help/apropos "mount")          ; names (and docstrings) matching
+;;   (beer.help/namespaces)               ; what there is
+;;   (beer.help/browse)                   ; the browser, on any tty
+;; In the window manager F1 (or Ctrl-Alt-H) opens the browser in a window.
+;;
+;; Browser keys: n/p or arrows move, RET follows, DEL or l goes back,
+;; / searches, g goes home, SPC/b page, q quits.
+
+(ns beer.help
+  (:require [beer.string :as s]))
+
+(def doc-dir "/share/doc")
+
+(defn keep [f xs] (filter (fn [x] (not (nil? x))) (map f xs)))
+
+(def none :beer.help/none)   ; "no value" (a macro, or eval failed)
+
+;; Namespaces made by C (natives) aren't in *loaded-libs*
+(def native-namespaces '[beer.core beer.mem beer.gfx beer.tty beer.bytes beer.blk.native])
+
+(defn publics* [ns-sym]
+  (try (filter (fn [n] (not (s/starts-with? n "__")))
+               (map str (ns-publics ns-sym)))
+       (catch e [])))
+
+(defn namespaces
+  "Sorted names of the namespaces that exist now."
+  []
+  (sort (distinct (filter (fn [n] (not (empty? (publics* (symbol n)))))
+                          (concat (map str native-namespaces)
+                                  (map name (keys *loaded-libs*)))))))
+
+(defn publics "Sorted public names of namespace ns (a string or symbol)." [ns]
+  (sort (publics* (symbol (str ns)))))
+
+(defn split-name
+  "[ns name] for \"beer.fs/ls\", a symbol, or [nil name]."
+  [x]
+  (let [t (str x) i (s/split t "/")]
+    (if (and (> (count i) 1) (not= (first i) ""))
+      [(first i) (s/join "/" (rest i))]
+      [nil t])))
+
+(defn lookup*
+  "{:ns :name :doc :kind :value} for name in ns, or nil."
+  [ns nm]
+  (let [sym (symbol nm)
+        nsym (symbol ns)]
+    (when (some (fn [p] (= p nm)) (publics* nsym))
+      (let [m (try (binding [*ns* nsym] (meta sym)) (catch e nil))
+            v (try (binding [*ns* nsym] (eval sym)) (catch e none))]
+        {:ns ns :name nm :doc (:doc m)
+         :kind (cond (= v none) "macro or special"
+                     (fn? v) "function"
+                     (map? v) "map" (vector? v) "vector" (string? v) "string"
+                     (number? v) "number" (keyword? v) "keyword"
+                     (s/starts-with? (pr-str v) "#<atom") "atom"
+                     (s/starts-with? (pr-str v) "#<channel") "channel"
+                     :else "value")
+         :value (when (and (not= v none) (not (fn? v))) v)}))))
+
+(defn resolve-name
+  "Info for a qualified name, or the first namespace defining a bare one."
+  [x]
+  (let [[ns nm] (split-name x)]
+    (if ns
+      (lookup* ns nm)
+      (some (fn [n] (lookup* n nm)) (namespaces)))))
+
+(defn first-line [doc] (when doc (first (s/split doc "\n"))))
+
+(defn apropos
+  "[ns/name first-doc-line] for every public name, or docstring, that
+  contains pat (case-insensitive)."
+  [pat]
+  (let [p (s/lower-case pat)]
+    (mapcat (fn [ns]
+              (keep (fn [nm]
+                      (let [full (str ns "/" nm)]
+                        (if (s/includes? (s/lower-case full) p)
+                          [full (first-line (:doc (lookup* ns nm)))]
+                          (let [d (:doc (lookup* ns nm))]
+                            (when (and d (s/includes? (s/lower-case d) p))
+                              [full (first-line d)])))))
+                    (publics ns)))
+            (namespaces))))
+
+(defn doc-pages "Names of the pages in /share/doc." []
+  (try (sort (filter (fn [f] (s/ends-with? f ".md")) (beer.fs/ls doc-dir))) (catch e [])))
+
+(defn describe
+  "Print what there is to know about a name."
+  [x]
+  (let [i (resolve-name x)]
+    (if (nil? i)
+      (println (str "No public name " x))
+      (do (println (str (:ns i) "/" (:name i) "   (" (:kind i) ")"))
+          (println (or (:doc i) "  (no docstring)"))
+          (when (:value i) (println (str "value: " (let [v (pr-str (:value i))] (if (> (count v) 200) (str (subs v 0 200) " ...") v)))))))
+    nil))
+
+;; ── the browser ───────────────────────────────────────────────────────────
+;; A page is {:title t :lines [[text target-or-nil] ...]}; a target is
+;; [:home] [:ns ns] [:name ns name] [:doc file] [:search pat].
+
+(def esc (str (char 27)))
+(def csi (str esc "["))
+
+(defn wrap
+  "Lines of text no wider than w."
+  [text w]
+  (mapcat (fn [l]
+            (if (<= (count l) w)
+              [l]
+              (loop [l l acc []]
+                (if (<= (count l) w) (conj acc l) (recur (subs l w) (conj acc (subs l 0 w)))))))
+          (s/split text "\n")))
+
+(defn backticked
+  "The names between `...` in a line of text that resolve, as targets."
+  [line]
+  (let [parts (s/split line "`")]
+    (keep (fn [i] (let [t (nth parts i)
+                        [ns nm] (split-name (first (s/split t " ")))]
+                    (when (and ns (lookup* ns nm)) [:name ns nm])))
+          (filter odd? (range (count parts))))))
+
+(defn page [target w]
+  (let [k (first target)]
+    (cond
+      (= k :home)
+      {:title "beeros help"
+       :lines (vec (concat [["Namespaces (RET to open):" nil]]
+                           (map (fn [n] [(str "  " n "  (" (count (publics n)) ")") [:ns n]]) (namespaces))
+                           [["" nil] ["Pages:" nil]]
+                           (map (fn [f] [(str "  " f) [:doc f]]) (doc-pages))
+                           [["" nil] ["/ searches names and docstrings; q quits." nil]]))}
+      (= k :ns)
+      (let [ns (second target)]
+        {:title (str "namespace " ns)
+         :lines (vec (map (fn [nm] (let [d (first-line (:doc (lookup* ns nm)))]
+                                     [(str "  " nm (if d (str "  - " d) "")) [:name ns nm]]))
+                          (publics ns)))})
+      (= k :name)
+      (let [[_ ns nm] target i (lookup* ns nm)]
+        {:title (str ns "/" nm)
+         :lines (vec (concat [[(str "(" (:kind i) ")") nil] ["" nil]]
+                             (map (fn [l] [l nil]) (wrap (or (:doc i) "(no docstring)") w))
+                             (when (:value i)
+                               (concat [["" nil]]
+                                       (map (fn [l] [l nil])
+                                            (wrap (str "value: " (let [v (pr-str (:value i))]
+                                                                   (if (> (count v) 600) (str (subs v 0 600) " ...") v)))
+                                                  w))))
+                             [["" nil] [(str "in namespace " ns) [:ns ns]]]))})
+      (= k :doc)
+      (let [f (second target)
+            text (try (beer.fs/slurp (str doc-dir "/" f)) (catch e "(cannot read)"))]
+        {:title f
+         :lines (vec (mapcat (fn [l] (let [ts (backticked l) ws (wrap l w)]
+                                       (map (fn [x] [x (first ts)]) ws)))
+                             (s/split text "\n")))})
+      (= k :search)
+      (let [pat (second target) hits (apropos pat)]
+        {:title (str "search: " pat "  (" (count hits) ")")
+         :lines (vec (map (fn [[full d]] (let [[ns nm] (split-name full)]
+                                           [(str "  " full (if d (str "  - " d) "")) [:name ns nm]]))
+                          hits))})
+      :else {:title "?" :lines []})))
+
+(defn pad [x n] (if (>= (count x) n) (subs x 0 n) (str x (apply str (repeat (- n (count x)) " ")))))
+
+(defn render!
+  "Write the rows that changed since last time; returns the new rows."
+  [st cols rows old]
+  (let [pg (:page st) h (- rows 2) top (:top st)
+        body (map (fn [i] (let [r (+ top i) l (get (:lines pg) r)]
+                            (cond (nil? l) ""
+                                  (= r (:sel st)) (str csi "7m" (pad (first l) cols) csi "0m")
+                                  (second l) (str csi "4m" (first l) csi "0m")
+                                  :else (first l))))
+                  (range h))
+        new (vec (concat [(str csi "7m" (pad (str " " (:title pg)) cols) csi "0m")]
+                         body
+                         [(pad (or (:prompt st) " RET open  DEL back  / search  g home  q quit") cols)]))
+        out (apply str (map (fn [i] (if (= (nth new i) (get old i)) ""
+                                        (str csi (inc i) ";1H" (nth new i) csi "K")))
+                            (range (count new))))]
+    (beer.tty/write! (str csi "?25l" out))
+    new))
+
+(defn key-of [k] (or (:char k) (:key k)))
+
+(defn read-search [st cols rows old]
+  (loop [pat "" old old]
+    (let [old (render! (assoc st :prompt (str " search: " pat)) cols rows old)
+          k (beer.tty/read-key) c (key-of k)]
+      (cond (= c :enter) [pat old]
+            (or (= c :escape) (and (= c :g) (contains? (or (:mods k) #{}) :ctrl))) [nil old]
+            (= c :backspace) (recur (if (> (count pat) 0) (subs pat 0 (dec (count pat))) pat) old)
+            (string? c) (recur (str pat c) old)
+            :else (recur pat old)))))
+
+(defn browse
+  "The help browser on the current tty; returns when you press q."
+  ([] (browse [:home]))
+  ([target]
+   (beer.tty/write! (str csi "H" csi "2J"))
+   (try
+     (loop [stack [] target target old [] sel nil]
+       (let [[cols rows] (beer.tty/size)
+             pg (page target (- cols 1))
+             n (count (:lines pg))
+             first-link (or (first (filter (fn [i] (second (nth (:lines pg) i))) (range n))) 0)]
+         (let [result
+               (loop [st {:page pg :sel (or sel first-link) :top 0} old old]
+                 (let [h (- rows 2)
+                       st (assoc st :top (cond (< (:sel st) (:top st)) (:sel st)
+                                               (>= (:sel st) (+ (:top st) h)) (- (:sel st) (dec h))
+                                               :else (:top st)))
+                       old (render! st cols rows old)
+                       k (beer.tty/read-key) c (key-of k)
+                       move (fn [d] (assoc st :sel (max 0 (min (dec (max n 1)) (+ (:sel st) d)))))]
+                   (cond
+                     (or (= c "q") (= c :escape)) [:quit]
+                     (or (= c "n") (= c :down) (= c "j")) (recur (move 1) old)
+                     (or (= c "p") (= c :up) (= c "k")) (recur (move -1) old)
+                     (or (= c " ") (= c :page-down)) (recur (move (- h 1)) old)
+                     (or (= c "b") (= c :page-up)) (recur (move (- 1 h)) old)
+                     (= c "g") [:go [:home] old]
+                     (or (= c :backspace) (= c "l")) [:back old]
+                     (= c "/") (let [[pat old] (read-search st cols rows old)]
+                                 (if pat [:go [:search pat] old] (recur st old)))
+                     (= c :enter) (let [l (get (:lines pg) (:sel st))]
+                                    (if (and l (second l)) [:go (second l) old (:sel st)] (recur st old)))
+                     :else (recur st old))))]
+           (cond
+             (= (first result) :quit) nil
+             (= (first result) :back) (if (empty? stack)
+                                        (recur stack target (second result) nil)
+                                        (let [[t s] (peek stack)] (recur (pop stack) t (second result) s)))
+             (= (first result) :go) (recur (conj stack [target (get result 3)]) (second result) (nth result 2) nil)))))
+     (finally (beer.tty/write! (str csi "0m" csi "H" csi "2J" csi "?25h"))))
+   nil))

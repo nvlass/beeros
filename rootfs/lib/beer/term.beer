@@ -383,7 +383,7 @@
   [t]
   (let [in (:in @t)]
     (swap! in (fn [m] (assoc m :closing? true)))
-    (when (:repl @in) (interrupt! (:repl @in)))
+    (when (and (:repl @in) (not= (:repl @in) (current-task))) (interrupt! (:repl @in)))
     nil))
 
 ;; ── a REPL on the terminal ────────────────────────────────────────────────
@@ -395,33 +395,42 @@
 
 (def esc (str (char 27)))
 
+(defn with-term
+  "Call f in this task with the terminal as its console: *out*/*err* go to
+  a capture stream the renderer drains (so what f and the tasks it spawns
+  print lands here, in order), beer.tty/*tty* reads the terminal's keys,
+  *ns* is user. The interrupt keys from whoever owns the keyboard
+  (interrupt-key!) interrupt this task: Ctrl-\\ or Ctrl-Alt-Esc always,
+  Ctrl-C while (busy?) says so."
+  ([t f] (with-term t (fn [] true) f))
+  ([t busy? f]
+   (let [[out slot] (beer.tty/capture-stream)
+         me (current-task)
+         in (:in @t)]
+     (attach-output! t slot)
+     (swap! in (fn [m] (assoc m :interrupt
+                              (fn [kind]
+                                (when (or (= kind :hard)
+                                          (and (busy?) (not (:ctrl-c-key? @in))))
+                                  (interrupt! me)
+                                  true)))))
+     (try
+       (binding [*ns* 'user
+                 *out* out
+                 *err* out
+                 beer.tty/*tty* (assoc (tty t) :write! (fn [s] (print s)))]
+         (f))
+       (finally (beer.tty/release-output! slot))))))
+
 (defn repl
-  "Read-eval-print on the terminal, forever; run it in its own task
-  (start-repl! does). It binds *ns*, *out*/*err* (a capture stream the
-  renderer drains) and beer.tty/*tty*, so it has its own namespace and
-  what it and the tasks it spawns print lands on the terminal; the line
-  editor writes through *out* too, so everything stays in order. It takes
-  the interrupt keys from whoever owns the keyboard (interrupt-key!):
-  Ctrl-\\ or Ctrl-Alt-Esc interrupt it, Ctrl-C does while a form runs.
-  close! ends it."
+  "Read-eval-print on the terminal, forever (with-term sets up its
+  console); run it in its own task (start-repl! does). close! ends it."
   [t]
-  (let [[out slot] (beer.tty/capture-stream)
-        busy (atom false)
-        me   (current-task)
+  (let [busy (atom false)
         in   (:in @t)]
-    (attach-output! t slot)
-    (swap! in (fn [m] (assoc m :interrupt
-                             (fn [kind]
-                               (when (or (= kind :hard)
-                                         (and @busy (not (:ctrl-c-key? @in))))
-                                 (interrupt! me)
-                                 true)))))
-    (binding [*ns* 'user
-              *out* out
-              *err* out
-              beer.tty/*tty* (assoc (tty t) :write! (fn [s] (print s)))]
-      (println "beeros terminal REPL")
-      (try
+    (with-term t (fn [] @busy)
+      (fn []
+        (println "beeros terminal REPL")
         (loop [n 1]
           (when (not (:closing? @in))
             (reset! busy false)
@@ -434,8 +443,7 @@
                 (when (not (:closing? @in))
                   (println (str esc "[0m" esc "[?25h" "\r\n[beeros] interrupted"))))
               (catch e (println (error-text e))))
-            (recur (inc n))))
-        (finally (beer.tty/release-output! slot))))))
+            (recur (inc n))))))))
 
 (defn start-repl!
   "A full-screen terminal with a REPL; returns the term."

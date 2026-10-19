@@ -2,29 +2,18 @@
 
 ## Soon-ish
 
-### Browsable documentation for everything hackable
+### Browsable documentation: next steps
 
-A help system you can walk around in, from beermacs and from any REPL:
-every namespace beeros loads (drivers, `beer.fs`, `beer.term`, `beer.wm`,
-beermacs itself, packages) with its public names and docstrings, plus the
-docs/*.md pages.
+Done (2026-10-19): `beer.help` (`describe`, `apropos`, `namespaces`,
+`browse`), F1 / Ctrl-Alt-H in the WM, docs pages in `/share/doc`. Next:
 
-- beermacs: `C-h f` describe a name (docstring, arglists, home namespace),
-  `C-h a` apropos (substring over all public names), `C-h n` a namespace
-  index; all into a `*Help*` buffer where RET on a name follows it, `l`
-  goes back. `C-h k` describe a key (the keymaps are data already).
-- REPL: `(beer.help/describe 'beer.fs/ls)`, `(beer.help/apropos "mount")`,
-  `(beer.help/namespaces)`; the same data as the editor.
-- `/share/doc`: the docs/*.md pages on the disk image, readable in
-  beermacs (`C-h d`).
-- Docstrings: most `lib/*.beer` fns have them; fill in the rest.
-
-Found while looking (beerlang 3d07ed0): `(meta 'sym)` gives `{:doc ...}`
-only for an unqualified symbol in the current namespace;
-`(binding [*ns* 'some.ns] (meta (symbol "name")))` works for others.
-There is no `all-ns`: list namespaces from `(keys *loaded-libs*)` plus
-the native ones (`beer.core`, `beer.gfx`, `beer.mem`, `beer.tty`,
-`beer.bytes`, ...), or ask beerlang for `all-ns` / qualified `meta`.
+- beermacs `C-h f` / `C-h a` / `C-h k` into a `*Help*` buffer, and F1 on
+  the name at point.
+- Docstrings for the native namespaces (`beer.core`, `beer.gfx`, ...) and
+  the `lib/*.beer` fns that lack one; arglists (beerlang keeps only
+  `:doc` in meta; ask for `:arglists`).
+- `all-ns` and qualified `meta` from beerlang would replace the
+  `*loaded-libs*` + native-list guess and the `binding *ns*` trick.
 
 ### ext2: rename, and the rest of writes
 

@@ -151,7 +151,7 @@ disk: $(DISK_IMG)
 # the sources are newer
 disk-present:
 	@[ -f $(DISK_IMG) ] || $(MAKE) disk
-	@if [ -n "$$(find rootfs packages -type f -newer $(DISK_IMG) | head -1)" ]; then \
+	@if [ -n "$$(find rootfs packages docs -type f -newer $(DISK_IMG) | head -1)" ]; then \
 	  echo "note: rootfs/ or packages/ changed since $(DISK_IMG) was built;"; \
 	  echo "      'make disk' rebuilds it (the current one is kept as $(DISK_IMG).bak)"; fi
 
@@ -161,12 +161,13 @@ disk-present:
 PACKAGES = $(notdir $(wildcard packages/*))
 PKG_TAR  = COPYFILE_DISABLE=1 tar --format ustar
 
-$(DISK_IMG): Makefile $(shell find rootfs packages -type f) $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS))
+$(DISK_IMG): Makefile $(shell find rootfs packages docs -type f) $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS))
 	rm -rf $(ROOTFS_STAGE)
 	if [ -f $@ ]; then mv $@ $@.bak; fi
 	mkdir -p $(addprefix $(ROOTFS_STAGE)/,$(ROOTFS_DIRS))
 	cp -R rootfs/. $(ROOTFS_STAGE)/
 	cp $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS)) $(ROOTFS_STAGE)/lib/beer/
+	mkdir -p $(ROOTFS_STAGE)/share/doc && cp docs/*.md $(ROOTFS_STAGE)/share/doc/
 	for p in $(PACKAGES); do \
 	  $(PKG_TAR) -cf $(ROOTFS_STAGE)/pkg/$$p.tar -C packages/$$p beer.edn \
 	    $$(cd packages/$$p && ls -d assets 2>/dev/null) -C src . || exit 1; \

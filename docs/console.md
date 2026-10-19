@@ -164,9 +164,11 @@ starts it when `/etc/beeros.edn` has `:console {:wm {...}}` (the default;
 | drag the tab | move |
 | click the box in the tab | close |
 | Ctrl-Alt-Enter / Ctrl-Alt-Tab / Ctrl-Alt-W | new / next / close (for when QEMU grabs the mouse) |
+| F1 / Ctrl-Alt-H | the help window (`beer.help/browse`): namespaces, names, docstrings, docs pages |
 | Ctrl-\, Ctrl-Alt-Esc, Ctrl-C | interrupt the focused window's REPL (as in "Two REPLs") |
 
-From a REPL: `(beer.wm/open! {:x 100 :y 80 :cols 60})`, `(beer.wm/close!)`,
+From a REPL: `(beer.wm/open! {:x 100 :y 80 :cols 60})` (`:run f` runs f in
+the window instead of a REPL; it closes when f returns), `(beer.wm/close!)`,
 `(beer.wm/focus! id)`, `@beer.wm/state`.
 
 **Compositing.** Each window draws into its own off-screen surface

@@ -141,6 +141,7 @@
 
 (def boot-driver :beerlang)
 
-(if (= boot-driver :beerlang)
-  (attach!)
-  (beer.blk/use-native-driver!))
+(when (not (beer.reload/reloading?))
+  (if (= boot-driver :beerlang)
+    (attach!)
+    (beer.blk/use-native-driver!)))

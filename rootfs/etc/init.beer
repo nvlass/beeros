@@ -8,6 +8,12 @@
 (when (:motd config)
   (println (:motd config)))
 
+;; Patched libraries: (beer.reload/ns! ...) each namespace listed under
+;; :reload, so edits to /lib/beer/*.beer (also the built-in ones) persist.
+(doseq [n (get config :reload [])]
+  (try (beer.reload/ns! n)
+       (catch e (println (str "[beeros] reload " n ": " (if (map? e) (:message e) (pr-str e)))))))
+
 ;; A terminal REPL on the screen (graphics builds), next to the serial one.
 (defn gfx? [] (try (not (empty? (ns-publics 'beer.gfx))) (catch e false)))
 

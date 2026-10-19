@@ -14,9 +14,9 @@
 
 ;; Backends offer! (never blocks: an event that doesn't fit is dropped);
 ;; consumers poll! or take with <!
-(def queue    (chan queue-max))
-(def held     (atom #{}))    ; keys and buttons currently down
-(def registry (atom {}))     ; device name -> info map from its backend
+(beer.reload/defonce queue    (chan queue-max))
+(beer.reload/defonce held     (atom #{}))    ; keys and buttons currently down
+(beer.reload/defonce registry (atom {}))     ; device name -> info map from its backend
 
 (defn register-device! [info]
   (swap! registry assoc (:name info) info)
@@ -35,7 +35,7 @@
 
 ;; (fn [ev]) that sees every event first and returns true to swallow it;
 ;; beer.tty installs the interrupt keys here
-(def intercept (atom nil))
+(beer.reload/defonce intercept (atom nil))
 
 (defn emit!
   "Queue ev. Key events get :mods, the modifiers held when the key moved,

@@ -19,9 +19,9 @@
 (def enabled? true)
 (defn enable! [] (def enabled? true) true)
 
-(def history     (atom []))
+(beer.reload/defonce history     (atom []))
 (def history-max 500)
-(def kill-ring   (atom []))     ; last killed text, as chars
+(beer.reload/defonce kill-ring   (atom []))     ; last killed text, as chars
 
 (def esc (str (char 27)))
 (def csi (str esc "["))

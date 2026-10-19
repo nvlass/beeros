@@ -16,8 +16,8 @@
 
 (ns beer.pkg)
 
-(def pkg-path (atom ["/pkg"]))
-(def bin-path (atom ["/bin"]))
+(beer.reload/defonce pkg-path (atom ["/pkg"]))
+(beer.reload/defonce bin-path (atom ["/bin"]))
 (def lib-path ["/lib/"])          ; *load-path* entries ahead of the packages
 
 (def ^:dynamic *args* [])         ; arguments of the script exec runs

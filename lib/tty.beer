@@ -101,7 +101,7 @@
             (do (beer.bytes/u8! buf i b) (recur (inc i)))
             {:char (beer.bytes/->string-lossy (beer.bytes/slice buf 0 i))}))))))
 
-(def last-byte (atom 0))
+(beer.reload/defonce last-byte (atom 0))
 
 (defn decode
   "Keystroke for the byte b (reading more bytes for sequences), or nil to
@@ -136,7 +136,7 @@
 ;; serial REPL's form. Whoever owns the keyboard can take them instead:
 ;; keyboard-interrupt holds (fn [kind]) returning true if it took the key
 ;; (beer.term's REPL interrupts its own task). A taken key is dropped.
-(def keyboard-interrupt (atom nil))
+(beer.reload/defonce keyboard-interrupt (atom nil))
 
 (defn interrupt-key? [ev]
   (let [k (:key ev) m (or (:mods ev) no-mods)
@@ -154,7 +154,7 @@
 
 ;; Also take keystrokes from beer.input keyboards (e.g. the QEMU window).
 ;; While a tty waits for a key it consumes all beer.input events.
-(def use-keyboard? (atom true))
+(beer.reload/defonce use-keyboard? (atom true))
 
 (defn keyboard-keystroke []
   (when @use-keyboard?
@@ -174,8 +174,8 @@
 ;; The serial terminal's size, for the line editor's wrapping and full-
 ;; screen programs (we can't ask the terminal yet):
 ;; (reset! beer.tty/serial-cols 120) (reset! beer.tty/serial-rows 40)
-(def serial-cols (atom 80))
-(def serial-rows (atom 24))
+(beer.reload/defonce serial-cols (atom 80))
+(beer.reload/defonce serial-rows (atom 24))
 
 (def serial
   {:name     "serial0"

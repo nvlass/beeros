@@ -541,7 +541,7 @@
 
 ")
 
-(def last-state (atom nil))   ; the editor state at exit, for a look at the REPL
+(beer.reload/defonce last-state (atom nil))   ; the editor state at exit, for a look at the REPL
 
 (defn -main
   "Edit files (or *scratch*); returns when you quit with C-x C-c."

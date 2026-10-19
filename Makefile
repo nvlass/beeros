@@ -151,7 +151,7 @@ disk: $(DISK_IMG)
 # the sources are newer
 disk-present:
 	@[ -f $(DISK_IMG) ] || $(MAKE) disk
-	@if [ -n "$$(find rootfs packages docs -type f -newer $(DISK_IMG) | head -1)" ]; then \
+	@if [ -n "$$(find rootfs packages docs lib -type f -newer $(DISK_IMG) | head -1)" ]; then \
 	  echo "note: rootfs/ or packages/ changed since $(DISK_IMG) was built;"; \
 	  echo "      'make disk' rebuilds it (the current one is kept as $(DISK_IMG).bak)"; fi
 
@@ -161,7 +161,7 @@ disk-present:
 PACKAGES = $(notdir $(wildcard packages/*))
 PKG_TAR  = COPYFILE_DISABLE=1 tar --format ustar
 
-$(DISK_IMG): Makefile $(shell find rootfs packages docs -type f) $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS))
+$(DISK_IMG): Makefile $(shell find rootfs packages docs lib -type f) $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS))
 	rm -rf $(ROOTFS_STAGE)
 	if [ -f $@ ]; then mv $@ $@.bak; fi
 	mkdir -p $(addprefix $(ROOTFS_STAGE)/,$(ROOTFS_DIRS))
@@ -171,6 +171,7 @@ $(DISK_IMG): Makefile $(shell find rootfs packages docs -type f) $(patsubst %,$(
 	  cp $(BEER_ROOT)/lib/beer/$$l.beer $(ROOTFS_STAGE)/lib/beer/$$l.beer || exit 1; \
 	done
 	mkdir -p $(ROOTFS_STAGE)/share/doc && cp docs/*.md $(ROOTFS_STAGE)/share/doc/
+	cp lib/*.beer $(ROOTFS_STAGE)/lib/beer/
 	for p in $(PACKAGES); do \
 	  $(PKG_TAR) -cf $(ROOTFS_STAGE)/pkg/$$p.tar -C packages/$$p beer.edn \
 	    $$(cd packages/$$p && ls -d assets 2>/dev/null) -C src . || exit 1; \
@@ -224,7 +225,7 @@ disasm: beeros.elf
 
 $(BUILD_DIR)/kernel/gfx_natives.o: kernel/gfx_beer_blob.h
 $(BUILD_DIR)/kernel/mem_natives.o: kernel/mem_beer_blob.h
-$(BUILD_DIR)/kernel/repl_uart.o: kernel/core_beer_blob.h
+$(BUILD_DIR)/kernel/repl_uart.o: kernel/core_beer_blob.h kernel/reload_beer_blob.h
 $(BUILD_DIR)/kernel/blk_natives.o: kernel/blk_beer_blob.h
 $(BUILD_DIR)/kernel/beer_libs.o: $(BEER_LIB_BLOBS)
 

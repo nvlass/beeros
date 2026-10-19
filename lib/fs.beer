@@ -90,7 +90,7 @@
           :rm!        ram-rm!
           :rmdir!     ram-rmdir!}})
 
-(def mount-table (atom {}))
+(beer.reload/defonce mount-table (atom {}))
 
 (defn normalize-mount-point [p]
   (if (and (not= p "/") (beer.string/ends-with? p "/"))
@@ -139,7 +139,7 @@
 ;; entry hello/core.beer of /pkg/hello.tar (packages, docs/packages.md).
 ;; Read-only; an archive is read once and kept until its inode changes.
 
-(def tar-cache (atom {}))   ; tar path -> {:key :bytes :index}
+(beer.reload/defonce tar-cache (atom {}))   ; tar path -> {:key :bytes :index}
 
 (defn tar-file? [path]
   (and (beer.string/ends-with? path ".tar")
@@ -265,4 +265,4 @@
       (load-file init-file)
       (catch e (println (str "[beeros] " (:message e)))))))
 
-(auto-mount!)
+(when (not (beer.reload/reloading?)) (auto-mount!))

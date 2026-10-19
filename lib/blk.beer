@@ -13,7 +13,7 @@
 
 ;; ── registry ──────────────────────────────────────────────────────────────
 
-(def registry (atom {}))
+(beer.reload/defonce registry (atom {}))
 
 (defn register-device! [dev]
   (swap! registry assoc (:name dev) dev)

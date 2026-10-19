@@ -14,25 +14,18 @@ beerlang libs; beeros's own `beer.mem`/`beer.gfx`/`beer.tty`/
   the WM's help window).
 - Docstrings for the `lib/*.beer` and `/lib/beer/*.beer` fns that lack one.
 
-### Live patching: a reload helper
+### Live patching: next steps
 
-Redefining a var takes effect at the next call, but whatever captured
-the old fn value keeps it: beermacs keymaps (fn values, not names), the
-WM's input loop, a term's renderer, tasks already running a loop. Wanted:
+Done (2026-10-20): `beer.reload` (`ns!`, `defonce`, `reloading?`,
+`on-reload!`), state in the libraries kept across reloads, boot side
+effects guarded, built-in lib sources on the disk, `:reload` in
+`/etc/beeros.edn`, beermacs keymaps as vars. Next:
 
-- `(beer.reload/ns! 'beer.wm)`: re-load a namespace from its file
-  (`/lib/...` or a package), then restart what registered as depending on
-  it. Long-running parts register a restart fn (`(beer.reload/on-reload!
-  'beer.wm restart-fn)`): the WM restarts its input task, beermacs
-  re-reads its keymaps, terms restart renderers.
-- Calls by name inside a fn body already see redefinitions (as in
-  Clojure); only stored fn values don't. Store vars instead (`#'f`;
-  beerlang 4a58848 has callable vars): beermacs's keymaps do. Still to
-  look at: the WM's handlers, term tty maps, `spawn` of long loops.
-- Embedded namespaces (`lib/*.beer` in the kernel image): a disk copy in
-  `/lib/beer/` that `/etc/init.beer` loads over the embedded one, so a
-  patch to a driver persists; `reload` finds it there.
-- beermacs: `C-c C-k` / `M-x reload` for the buffer's namespace.
+- beermacs `C-c C-k`: reload the buffer's namespace (save, then `ns!`).
+- `defonce` from beerlang instead of `beer.reload/defonce` (requested).
+- Hooks where an old fn value is held: none needed so far (the WM loop,
+  renderers and the editor call by name), but watch for `spawn` of
+  closures.
 
 ### ext2: rename, and the rest of writes
 

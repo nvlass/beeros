@@ -165,7 +165,7 @@
 ;; ── attach ────────────────────────────────────────────────────────────────
 
 ;; Each attach! starts a new generation; older polling tasks see it and exit.
-(def generation (atom 0))
+(beer.reload/defonce generation (atom 0))
 
 (defn run-loop [d gen]
   (loop []
@@ -195,4 +195,4 @@
           (recur (rest bases) (assoc counts kind (inc i)))))))
   (keys (beer.input/devices)))
 
-(attach!)
+(when (not (beer.reload/reloading?)) (attach!))

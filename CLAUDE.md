@@ -71,7 +71,17 @@ beeros/
 
 Embedded libraries: `lib/foo.beer` becomes `kernel/foo_beer_blob.h` (array
 `lib_foo_beer`) by a pattern rule. Pure-beerlang libs go in `BEER_LIBS`
-(Makefile) and `kernel/beer_libs.c`, in load order.
+(Makefile) and `kernel/beer_libs.c`, in load order. Their sources are
+also copied to `/lib/beer/` on the disk, so they can be read, edited and
+reloaded.
+
+**Reloading (`lib/reload.beer`, loaded right after core.beer).**
+`(beer.reload/ns! 'beer.wm)` re-runs a namespace's file. So that's safe,
+library state that must survive is defined with `(beer.reload/defonce
+x (atom ...))` and boot side effects (probing, mounting, spawning) are
+guarded with `(when (not (beer.reload/reloading?)) ...)` — keep doing
+both in new libraries. `on-reload!` registers hooks; `:reload [ns ...]`
+in `/etc/beeros.edn` reloads patched built-in libs at boot.
 
 ## Board HAL contract
 

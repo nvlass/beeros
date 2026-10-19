@@ -1,0 +1,68 @@
+;; beer.reload — reload a namespace from its file, keeping its state
+;;
+;;   (beer.reload/ns! 'beer.wm)          ; re-read /lib/beer/wm.beer
+;;   (beer.reload/ns! 'beermacs.core)    ; works for packages too
+;;
+;; Calls by name see the new definitions at once (a fn body looks its vars
+;; up when it runs), so a reload is usually all it takes. Two things make
+;; it safe to re-run a file:
+;;
+;; - State that must survive is defined with defonce:
+;;     (beer.reload/defonce state (atom {}))   ; init only the first time
+;; - Boot-time side effects (probing devices, mounting, spawning tasks)
+;;   are guarded: (when (not (beer.reload/reloading?)) (attach!)).
+;;
+;; Anything that holds an old fn value (a task already running a loop, a
+;; map of fns) can register a hook: (on-reload! 'beer.wm :loop restart-fn)
+;; runs after each reload of beer.wm.
+;;
+;; The libraries built into the kernel image have their source on the disk
+;; too (/lib/beer/tty.beer ...): edit it and reload. To keep a patch across
+;; reboots list the namespace in /etc/beeros.edn under :reload.
+
+(ns beer.reload)
+
+(defmacro defonce
+  "(defonce name init): define name as init, unless it already has a value
+  (a reload keeps it)."
+  [nm init]
+  (list 'def nm (list 'try (symbol (str *ns* "/" nm)) (list 'catch 'e init))))
+
+(def ^:dynamic *reloading* false)
+
+(defn reloading? "Is a reload running (in this task)?" [] *reloading*)
+
+(def hooks (atom {}))                  ; {ns-name {key fn}}
+
+(defn on-reload!
+  "Run f (no arguments) after every reload of namespace ns; key names the
+  hook, so registering again replaces it."
+  [ns key f]
+  (swap! hooks (fn [h] (assoc-in h [(str ns) key] f)))
+  nil)
+
+(defn rel-path
+  "beer.virtio-blk -> beer/virtio_blk.beer"
+  [ns]
+  (str (beer.string/replace (beer.string/replace (str ns) "." "/") "-" "_") ".beer"))
+
+(defn file-for
+  "The file a namespace loads from: the first on *load-path* that exists."
+  [ns]
+  (let [rel (rel-path ns)]
+    (some (fn [dir] (let [p (str dir rel)] (when (try (beer.fs/stat p) true (catch e false)) p)))
+          beer.core/*load-path*)))
+
+(defn ns!
+  "Load namespace ns again from its file, keeping defonce'd state, then run
+  its hooks. Returns the file."
+  [ns]
+  (let [path (file-for ns)]
+    (when (nil? path)
+      (throw (ex-info (str "reload: no file for " ns " on " (pr-str beer.core/*load-path*))
+                      {:ns ns :reason :no-file})))
+    (binding [*reloading* true]
+      (load-file path))
+    (doseq [f (vals (get @hooks (str ns)))]
+      (try (f) (catch e (println (str "reload: a hook of " ns " failed: " (if (map? e) (:message e) (pr-str e)))))))
+    path))

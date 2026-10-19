@@ -36,6 +36,7 @@
 #include "beer_libs.h"
 #include "console.h"
 #include "core_beer_blob.h"
+#include "reload_beer_blob.h"
 
 #ifdef BEEROS_GFX
 #include "gfx_natives.h"
@@ -419,6 +420,8 @@ void beeros_main(void) {
     namespace_init_bare();   /* core.beer comes from the blob below, not a file */
     /* defn/ns/let/when/loop... are core.beer macros; mem.beer and gfx.beer need them */
     beer_load_lib(core_beer, core_beer_len, "lib/core.beer", "beer.core");
+    /* beer.reload first: the other libraries use its defonce and reloading? */
+    beer_load_lib(lib_reload_beer, lib_reload_beer_len, "lib/reload.beer", "beer.reload");
     uart_puts("[beeros] core macros loaded (embedded lib/core.beer)\r\n");
 
     mem_register_natives();

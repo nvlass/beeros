@@ -32,7 +32,7 @@
 (def border 1)
 (def tab-h 12)              ; title tab: the 8x8 font plus 2 px above and below
 
-(def state (atom {:windows [] :focus nil :pointer [0 0] :drag nil :next 1
+(beer.reload/defonce state (atom {:windows [] :focus nil :pointer [0 0] :drag nil :next 1
                   :opts {} :task nil}))
 
 (def font (beer.font/builtin))

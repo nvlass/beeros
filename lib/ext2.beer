@@ -357,7 +357,7 @@
     (fail! op path :unsupported-ro-features)))
 
 ;; the lock: a task holds it for a whole write operation
-(def lock (atom nil))
+(beer.reload/defonce lock (atom nil))
 
 (defn locked [f]
   (let [me (current-task)]

@@ -2,6 +2,9 @@
 {:hostname "beerbox"
  :motd     "Welcome to beeros. (beer.fs/ls \"/\") to look around."
  :keyboard {:layout :us}
+ ;; Namespaces to reload from /lib at boot (after the built-in ones), so a
+ ;; patched /lib/beer/tty.beer etc. survives a reboot: [beer.tty]
+ :reload   []
  ;; On a screen: :wm, windows with REPLs (beer.wm; options :cols :rows
  ;; :scale for new windows), or :term, one full-screen REPL (beer.term;
  ;; :scale :cols :rows :x :y :fg :bg). :wm wins if both are set.

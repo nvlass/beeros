@@ -26,11 +26,12 @@ There is no `all-ns`: list namespaces from `(keys *loaded-libs*)` plus
 the native ones (`beer.core`, `beer.gfx`, `beer.mem`, `beer.tty`,
 `beer.bytes`, ...), or ask beerlang for `all-ns` / qualified `meta`.
 
-### ext2 writes
+### ext2: rename, and the rest of writes
 
-So edits to `/etc`, `/lib` and packages survive a reboot (today only
-`/tmp`, a RAM fs, is writable): block and inode allocation, directory
-entries, `beer.fs/spit!` on ext2. Then beermacs can save anywhere.
+Writing files, mkdir, rm, rmdir work (2026-10-19). Still to do: `mv`
+(rename, also across directories, fixing `..`), symlinks, triple-indirect
+files (> 64 MiB with 1 KiB blocks), growing a directory past 12 blocks,
+and a write-back cache (every write goes to the device now).
 
 ### A graphics editor for serious work
 

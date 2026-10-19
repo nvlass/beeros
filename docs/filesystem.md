@@ -1,7 +1,7 @@
 # Filesystem choice
 
-Status: **decided: ext2**, implemented in stages. Stage 1 (read-only,
-`lib/ext2.beer`) and stage 2 (`lib/fs.beer`, mount table + beerlang's file hook) are done. This
+Status: **decided: ext2**, implemented in stages. Stage 1 (reading,
+`lib/ext2.beer`), stage 2 (`lib/fs.beer`, mount table + beerlang's file hook) and stage 3 (writes, below) are done. This
 sits on the block-device map from `docs/block-device.md`; a filesystem only
 ever calls `:read!` / `:write!` / `:flush!`.
 
@@ -160,3 +160,28 @@ writable one so far: `(beer.fs/spit! "/tmp/x" "text")` (or beerlang's
 `spit`, through the `*fs*` hook) writes, append too; `ls`, `slurp`,
 `stat` work as on ext2. Its contents are gone at reboot. Writing to a
 file system without a `:write!` op (ext2) throws `:read-only`.
+
+## Stage 3: writes (`beer.ext2`)
+
+```clojure
+(spit "/etc/motd" "hello\n")                  ; beerlang's spit, through *fs*
+(beer.fs/spit! "/work/a.txt" "text" true)     ; append
+(beer.fs/mkdir! "/work") (beer.fs/rm! "/work/a.txt") (beer.fs/rmdir! "/work")
+```
+
+`write-file!` creates the file if needed (an inode from the inode bitmap,
+an entry in the parent directory), frees the old blocks, allocates new
+ones from the block bitmap near the inode's group, writes the data in
+contiguous runs and builds the block map (direct, single and double
+indirect: files up to ~64 MiB with 1 KiB blocks). Free counts in the
+group descriptors and the superblock are read-modified-written with each
+change; bitmaps are read fresh. One lock serialises write operations.
+Timestamps come from the RTC (`beer.mem/unix-time`).
+
+Not handled: htree-indexed directories (refused; mke2fs only indexes big
+ones), rename, symlinks, growing a directory past 12 blocks, unknown
+ro_compat features (refused). There is no journal: after a crash, check
+the image on the host with `e2fsck -fn build/disk.img` (or `-fy` to fix).
+
+Since the disk now holds your work, the run targets keep an existing
+`build/disk.img`; `make disk` rebuilds it (old one → `disk.img.bak`).

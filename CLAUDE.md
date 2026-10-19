@@ -199,14 +199,19 @@ attaches it by default; `DISK=` for none) (+ beerlang's
 ## Filesystem (`beer.ext2`)
 
 ext2, chosen over FAT32/littlefs/etc. — comparison and staged plan in
-`docs/filesystem.md`. `lib/ext2.beer` is read-only so far:
-`(beer.ext2/mount dev)`, `ls`, `slurp`, `read-bytes`, `stat`/`lstat`,
-`readlink`. `lib/fs.beer` (`beer.fs`) mounts the first ext2 device at `/`
+`docs/filesystem.md`. `lib/ext2.beer` reads (`(beer.ext2/mount dev)`, `ls`,
+`slurp`, `read-bytes`, `stat`/`lstat`, `readlink`) and writes
+(`write-file!`, `mkdir!`, `rm!`, `rmdir!`: bitmaps, group/superblock
+counts, up to double-indirect files, one lock; no journal, no rename yet;
+checked with `e2fsck -fn`). `lib/fs.beer` (`beer.fs`) mounts the first ext2 device at `/`
 at boot and offers `ls`/`slurp`/`stat`/`mount!` on absolute paths. It
 installs beerlang's file hook `beer.core/*fs*` and sets `*load-path*` to
 `["/lib/"]`, so beerlang's own `require`/`load-file`/`slurp` read from it
-(see `docs/filesystem.md`). `/tmp` is a RAM file system (`:type :ram`,
-writable: `beer.fs/spit!`, beerlang's `spit`), the only writable one so far. `/etc/init.beer` runs last at boot
+(see `docs/filesystem.md`). `/` (ext2) and `/tmp` (a RAM file system, `:type :ram`) are writable:
+`beer.fs/spit!` (and beerlang's `spit`), `mkdir!`, `rm!`, `rmdir!`.
+Because of that, `make run-gfx`/`run-disk` never rebuild an existing
+`build/disk.img` (they note when `rootfs/` is newer); `make disk`
+rebuilds it and keeps the old one as `build/disk.img.bak`. `/etc/init.beer` runs last at boot
 (`beer_run_init()`, after gfx) and starts the terminal REPL. Refuses incompat features other than `filetype` (so ext3/4
 images are rejected, not misread). Build images with e2fsprogs
 (`brew install e2fsprogs`, keg-only in `/opt/homebrew/opt/e2fsprogs/sbin`):

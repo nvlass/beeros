@@ -7,8 +7,7 @@
 ;; command fns of the editor state, so you can rebind from a REPL:
 ;;   (swap! beermacs.core/global-map assoc "C-z" beermacs.core/undo)
 ;;
-;; Files under /tmp can be saved (a RAM file system); the disk is
-;; read-only so far.
+;; Files save to the disk (ext2) or /tmp (RAM, gone at reboot).
 
 (ns beermacs.core
   (:require [beer.string :as s]
@@ -407,7 +406,7 @@
 (def scratch-text
   ";; This buffer is for text that is not saved, and for beerlang evaluation.
 ;; C-x C-e evaluates the form before point, C-j inserts its value.
-;; C-x C-f opens a file (/tmp is writable), C-x C-c quits.
+;; C-x C-f opens a file, C-x C-s saves it, C-x C-c quits.
 
 ")
 

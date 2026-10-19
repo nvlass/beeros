@@ -1,4 +1,5 @@
-;; beer.ext2 — read-only ext2 (see docs/filesystem.md)
+;; beer.ext2 — ext2: reading, and writing files and directories (see
+;; docs/filesystem.md)
 ;;
 ;; Works on any block-device map from beer.blk. Nothing is cached yet:
 ;; every call reads what it needs from the device.
@@ -160,6 +161,7 @@
      :mtime    (u32 buf (+ o i-mtime))
      :sectors  (u32 buf (+ o i-blocks))
      :file-acl (u32 buf (+ o i-file-acl))
+     :flags    (u32 buf (+ o 32))
      :block    (vec (map (fn [k] (u32 buf (+ o i-block (* 4 k)))) (range 15)))
      :i-block  (beer.bytes/slice buf (+ o i-block) 60)}))
 
@@ -314,3 +316,474 @@
   (let [s (beer.bytes/->string (read-bytes fs path))]
     (when (nil? s) (fail! :slurp path :not-utf8))
     s))
+
+;; ── writing ───────────────────────────────────────────────────────────────
+;; Files can be written (created, replaced, grown, shrunk), directories made
+;; and removed. No journal: a crash mid-write can leave the disk needing
+;; e2fsck. Free counts live on disk (group descriptors, superblock) and are
+;; read-modified-written; bitmaps are read fresh every time. One lock, so
+;; two tasks never allocate the same blocks.
+
+(def i-atime  8)
+(def i-ctime  12)
+(def i-dtime  20)
+(def i-flags  32)
+(def i-extra-isize 128)
+(def flag-index 0x1000)              ; htree directory (dir_index)
+
+(def sb-free-blocks 12)
+(def sb-free-inodes 16)
+(def sb-wtime       48)
+(def sb-first-ino   84)
+(def sb-want-extra-isize 0x15E)
+
+(def gd-free-blocks 12)
+(def gd-free-inodes 14)
+(def gd-used-dirs   16)
+
+(def ro-sparse-super 0x1)
+(def ro-writable (bit-or ro-sparse-super ro-large-file))
+
+(defn u8!  [b o v] (beer.bytes/u8! b o v))
+(defn u16! [b o v] (beer.bytes/u16le! b o v))
+(defn u32! [b o v] (beer.bytes/u32le! b o v))
+
+(defn now [] (beer.mem/unix-time))
+
+(defn writable!
+  "Throw unless this filesystem can be written by this code."
+  [fs op path]
+  (when (not= 0 (bit-and (:ro-compat (:features fs)) (bit-not ro-writable)))
+    (fail! op path :unsupported-ro-features)))
+
+;; the lock: a task holds it for a whole write operation
+(def lock (atom nil))
+
+(defn locked [f]
+  (let [me (current-task)]
+    (loop []
+      (when (not (compare-and-set! lock nil me))
+        (yield) (recur)))
+    (try (f) (finally (reset! lock nil)))))
+
+;; ── blocks, superblock, group descriptors ────────────────────────────────
+
+(defn write-blocks!
+  "Write n fs blocks starting at block b from buf at byte off."
+  [fs b n buf off]
+  ((:write! (:dev fs)) (* b (:spb fs)) (* n (:spb fs)) buf off))
+
+(defn write-block! [fs b buf] (write-blocks! fs b 1 buf 0))
+
+(defn sb-update!
+  "Apply f to the superblock's bytes and write them back."
+  [fs f]
+  (let [dev (:dev fs) ss (:sector-size dev)
+        lba (quot 1024 ss) n (max 1 (quot 1024 ss))
+        buf (beer.blk/read-sectors dev lba n)]
+    (f buf)
+    (u32! buf sb-wtime (now))
+    (beer.blk/write-sectors! dev lba n buf 0)))
+
+(defn gd-update!
+  "Apply (f buf off) to group g's descriptor and write its block back."
+  [fs g f]
+  (let [bs (:block-size fs)
+        byte (* g 32)
+        blk (+ (inc (:first-data-block fs)) (quot byte bs))
+        buf (read-block fs blk)]
+    (f buf (rem byte bs))
+    (write-block! fs blk buf)))
+
+(defn adjust-counts!
+  "Free blocks / free inodes / used dirs of group g change by these deltas
+  (and the superblock's totals with them)."
+  [fs g dblocks dinodes ddirs]
+  (gd-update! fs g (fn [b o]
+                     (u16! b (+ o gd-free-blocks) (+ (u16 b (+ o gd-free-blocks)) dblocks))
+                     (u16! b (+ o gd-free-inodes) (+ (u16 b (+ o gd-free-inodes)) dinodes))
+                     (u16! b (+ o gd-used-dirs)   (+ (u16 b (+ o gd-used-dirs)) ddirs))))
+  (sb-update! fs (fn [b]
+                   (u32! b sb-free-blocks (+ (u32 b sb-free-blocks) dblocks))
+                   (u32! b sb-free-inodes (+ (u32 b sb-free-inodes) dinodes)))))
+
+(defn ngroups [fs] (count (:groups fs)))
+
+(defn bit? [buf i] (not= 0 (bit-and (u8 buf (quot i 8)) (bit-shift-left 1 (rem i 8)))))
+(defn set-bit! [buf i on?]
+  (let [o (quot i 8) m (bit-shift-left 1 (rem i 8)) v (u8 buf o)]
+    (u8! buf o (if on? (bit-or v m) (bit-and v (bit-not m))))))
+
+;; ── allocation ────────────────────────────────────────────────────────────
+
+(defn alloc-blocks!
+  "n free blocks (marked used), searching from group goal; throws when the
+  disk is full."
+  [fs goal n]
+  (let [bpg (:blocks-per-group fs) fdb (:first-data-block fs) ng (ngroups fs)]
+    (loop [k 0 acc []]
+      (cond
+        (>= (count acc) n) acc
+        (>= k ng) (do (free-blocks! fs acc) (fail! :alloc :blocks :disk-full))
+        :else
+        (let [g   (rem (+ goal k) ng)
+              gd  (nth (:groups fs) g)
+              bm  (read-block fs (:block-bitmap gd))
+              base (+ fdb (* g bpg))
+              limit (min bpg (- (:blocks fs) base))
+              got (loop [i 0 got []]
+                    (cond (or (>= i limit) (>= (+ (count acc) (count got)) n)) got
+                          (= 0xFF (u8 bm (quot i 8))) (recur (+ i (- 8 (rem i 8))) got)
+                          (bit? bm i) (recur (inc i) got)
+                          :else (do (set-bit! bm i true) (recur (inc i) (conj got (+ base i))))))]
+          (when (not (empty? got))
+            (write-block! fs (:block-bitmap gd) bm)
+            (adjust-counts! fs g (- (count got)) 0 0))
+          (recur (inc k) (into acc got)))))))
+
+(defn free-blocks!
+  "Mark blocks free again (0s, holes, are skipped)."
+  [fs blocks]
+  (let [bpg (:blocks-per-group fs) fdb (:first-data-block fs)
+        by-group (group-by (fn [b] (quot (- b fdb) bpg)) (filter (fn [b] (not= b 0)) blocks))]
+    (doseq [g (keys by-group)]
+      (let [gd (nth (:groups fs) g)
+            bm (read-block fs (:block-bitmap gd))
+            bs (get by-group g)]
+        (doseq [b bs] (set-bit! bm (- b fdb (* g bpg)) false))
+        (write-block! fs (:block-bitmap gd) bm)
+        (adjust-counts! fs g (count bs) 0 0)))))
+
+(defn first-ino [fs]
+  (let [sb (read-superblock (:dev fs))] (if (>= (u32 sb sb-rev-level) 1) (u32 sb sb-first-ino) 11)))
+
+(defn alloc-inode!
+  "A free inode number (marked used), searching from group goal."
+  [fs goal dir?]
+  (let [ipg (:inodes-per-group fs) ng (ngroups fs) fi (first-ino fs)]
+    (loop [k 0]
+      (when (>= k ng) (fail! :alloc :inode :no-free-inodes))
+      (let [g  (rem (+ goal k) ng)
+            gd (nth (:groups fs) g)
+            bm (read-block fs (:inode-bitmap gd))
+            i  (loop [i 0]
+                 (cond (>= i ipg) nil
+                       (or (bit? bm i) (< (+ 1 i (* g ipg)) fi)) (recur (inc i))
+                       :else i))]
+        (if (nil? i)
+          (recur (inc k))
+          (do (set-bit! bm i true)
+              (write-block! fs (:inode-bitmap gd) bm)
+              (adjust-counts! fs g 0 -1 (if dir? 1 0))
+              (+ 1 i (* g ipg))))))))
+
+(defn free-inode! [fs ino dir?]
+  (let [ipg (:inodes-per-group fs)
+        g (quot (dec ino) ipg)
+        gd (nth (:groups fs) g)
+        bm (read-block fs (:inode-bitmap gd))]
+    (set-bit! bm (rem (dec ino) ipg) false)
+    (write-block! fs (:inode-bitmap gd) bm)
+    (adjust-counts! fs g 0 1 (if dir? -1 0))))
+
+(defn group-of-inode [fs ino] (quot (dec ino) (:inodes-per-group fs)))
+
+;; ── inodes ────────────────────────────────────────────────────────────────
+
+(defn inode-update!
+  "Apply (f buf off) to inode ino's bytes and write its block back."
+  [fs ino f]
+  (let [bs (:block-size fs)
+        i (dec ino)
+        g (nth (:groups fs) (quot i (:inodes-per-group fs)))
+        byte (* (rem i (:inodes-per-group fs)) (:inode-size fs))
+        blk (+ (:inode-table g) (quot byte bs))
+        buf (read-block fs blk)]
+    (f buf (rem byte bs))
+    (write-block! fs blk buf)))
+
+(defn set-block-map! [buf o blocks]
+  (loop [k 0] (when (< k 15) (u32! buf (+ o i-block (* 4 k)) (nth blocks k)) (recur (inc k)))))
+
+(defn init-inode!
+  "A fresh inode: mode, one link, empty."
+  [fs ino mode links]
+  (let [t (now)
+        want (let [sb (read-superblock (:dev fs))] (u16 sb sb-want-extra-isize))]
+    (inode-update! fs ino
+                   (fn [b o]
+                     (beer.bytes/fill! b o (:inode-size fs) 0)
+                     (u16! b (+ o i-mode) mode)
+                     (u16! b (+ o i-links) links)
+                     (u32! b (+ o i-atime) t) (u32! b (+ o i-ctime) t) (u32! b (+ o i-mtime) t)
+                     (when (> (:inode-size fs) 128)
+                       (u16! b (+ o i-extra-isize) (if (> want 0) want 32)))))))
+
+;; ── block maps ────────────────────────────────────────────────────────────
+
+(defn indirect-blocks
+  "The indirect blocks (not data) under blk at depth (1 = single)."
+  [fs blk depth]
+  (if (or (= blk 0) (= depth 0))
+    []
+    (let [buf (read-block fs blk) ppb (quot (:block-size fs) 4)]
+      (if (= depth 1)
+        [blk]
+        (into [blk] (mapcat (fn [k] (indirect-blocks fs (u32 buf (* 4 k)) (dec depth))) (range ppb)))))))
+
+(defn all-blocks
+  "Every block an inode uses: data and indirect."
+  [fs inode]
+  (let [b (:block inode)]
+    (concat (file-blocks fs inode)
+            (indirect-blocks fs (nth b 12) 1)
+            (indirect-blocks fs (nth b 13) 2)
+            (indirect-blocks fs (nth b 14) 3))))
+
+(defn pointer-block [fs ptrs]
+  (let [buf (beer.bytes/alloc (:block-size fs))]
+    (loop [i 0 ps ptrs] (when (not (empty? ps)) (u32! buf (* 4 i) (first ps)) (recur (inc i) (rest ps))))
+    buf))
+
+(defn build-map!
+  "[i_block vector, number of indirect blocks] for these data blocks,
+  allocating and writing the indirect blocks (up to double indirect)."
+  [fs goal data path]
+  (let [ppb (quot (:block-size fs) 4)
+        n (count data)
+        direct (vec (take 12 data))
+        single (vec (take ppb (drop 12 data)))
+        double (vec (drop (+ 12 ppb) data))]
+    (when (> (count double) (* ppb ppb)) (fail! :write path :file-too-large))
+    (let [s-blk (when (not (empty? single))
+                  (let [b (first (alloc-blocks! fs goal 1))]
+                    (write-block! fs b (pointer-block fs single)) b))
+          chunks (loop [xs double acc []]
+                   (if (empty? xs) acc (recur (vec (drop ppb xs)) (conj acc (vec (take ppb xs))))))
+          d-blk (when (not (empty? double))
+                  (let [seconds (alloc-blocks! fs goal (count chunks))
+                        top     (first (alloc-blocks! fs goal 1))]
+                    (loop [i 0]
+                      (when (< i (count chunks))
+                        (write-block! fs (nth seconds i) (pointer-block fs (nth chunks i)))
+                        (recur (inc i))))
+                    (write-block! fs top (pointer-block fs seconds))
+                    top))
+          blocks (vec (concat direct (repeat (- 12 (count direct)) 0)
+                              [(or s-blk 0) (or d-blk 0) 0]))]
+      [blocks (+ (if s-blk 1 0) (if d-blk (inc (count chunks)) 0))])))
+
+(defn write-data!
+  "Write the bytes of buf (size bytes) into data blocks, in contiguous runs;
+  the last partial block goes through a zero-padded copy."
+  [fs data buf size]
+  (let [bs (:block-size fs) n (count data)
+        full (quot size bs)
+        max-run (max 1 (quot max-run-bytes bs))]
+    (loop [i 0]
+      (when (< i full)
+        (let [start (nth data i)
+              run (loop [k 1] (if (and (< (+ i k) full) (< k max-run) (= (nth data (+ i k)) (+ start k)))
+                                (recur (inc k)) k))]
+          (write-blocks! fs start run buf (* i bs))
+          (recur (+ i run)))))
+    (when (> n full)
+      (let [tail (beer.bytes/alloc bs)]
+        (beer.bytes/copy! tail 0 buf (* full bs) (- size (* full bs)))
+        (write-block! fs (nth data full) tail)))))
+
+;; ── directories ───────────────────────────────────────────────────────────
+
+(defn align4 [n] (* 4 (quot (+ n 3) 4)))
+
+(defn type->ft [t] (cond (= t :file) 1 (= t :dir) 2 (= t :symlink) 7 :else 0))
+
+(defn put-entry! [fs buf o ino rec name t]
+  (let [nb (beer.bytes/from-string name)]
+    (u32! buf o ino)
+    (u16! buf (+ o 4) rec)
+    (if (:filetype? fs)
+      (do (u8! buf (+ o 6) (beer.bytes/capacity nb)) (u8! buf (+ o 7) (type->ft t)))
+      (u16! buf (+ o 6) (beer.bytes/capacity nb)))
+    (beer.bytes/copy! buf (+ o 8) nb 0 (beer.bytes/capacity nb))))
+
+(defn name-len [fs buf o] (if (:filetype? fs) (u8 buf (+ o 6)) (u16 buf (+ o 6))))
+
+(defn check-dir-writable! [fs dir path]
+  (when (not= 0 (bit-and (:flags dir) flag-index)) (fail! :write path :indexed-directory)))
+
+(defn add-entry!
+  "Add name -> ino (of type t) to directory inode dir."
+  [fs dir name ino t path]
+  (check-dir-writable! fs dir path)
+  (let [bs (:block-size fs)
+        need (align4 (+ 8 (beer.bytes/capacity (beer.bytes/from-string name))))
+        blocks (file-blocks fs dir)
+        done (some (fn [blk]
+                     (let [buf (read-block fs blk)]
+                       (loop [o 0]
+                         (when (< o bs)
+                           (let [e (u32 buf o) rec (u16 buf (+ o 4))
+                                 used (if (= e 0) 0 (align4 (+ 8 (name-len fs buf o))))]
+                             (when (< rec 8) (fail! :write path :corrupt-directory))
+                             (if (>= (- rec used) need)
+                               (do (if (= e 0)
+                                     (put-entry! fs buf o ino rec name t)
+                                     (do (u16! buf (+ o 4) used)
+                                         (put-entry! fs buf (+ o used) ino (- rec used) name t)))
+                                   (write-block! fs blk buf)
+                                   true)
+                               (recur (+ o rec))))))))
+                   blocks)]
+    (when (not done)
+      (when (>= (count blocks) 12) (fail! :write path :directory-too-large))
+      (let [blk (first (alloc-blocks! fs (group-of-inode fs (:ino dir)) 1))
+            buf (beer.bytes/alloc bs)]
+        (put-entry! fs buf 0 ino bs name t)
+        (write-block! fs blk buf)
+        (inode-update! fs (:ino dir)
+                       (fn [b o]
+                         (u32! b (+ o i-block (* 4 (count blocks))) blk)
+                         (u32! b (+ o i-size) (* bs (inc (count blocks))))
+                         (u32! b (+ o i-blocks) (+ (u32 b (+ o i-blocks)) (quot bs 512)))))))
+    (inode-update! fs (:ino dir) (fn [b o] (u32! b (+ o i-mtime) (now)) (u32! b (+ o i-ctime) (now))))))
+
+(defn remove-entry!
+  "Remove name from directory inode dir."
+  [fs dir name path]
+  (check-dir-writable! fs dir path)
+  (let [bs (:block-size fs)
+        found (some (fn [blk]
+                      (let [buf (read-block fs blk)]
+                        (loop [o 0 prev nil]
+                          (when (< o bs)
+                            (let [e (u32 buf o) rec (u16 buf (+ o 4))
+                                  nm (when (not= e 0)
+                                       (beer.bytes/->string (beer.bytes/slice buf (+ o 8) (name-len fs buf o))))]
+                              (if (= nm name)
+                                (do (if prev
+                                      (u16! buf (+ prev 4) (+ (u16 buf (+ prev 4)) rec))
+                                      (u32! buf o 0))
+                                    (write-block! fs blk buf)
+                                    true)
+                                (recur (+ o rec) o)))))))
+                    (file-blocks fs dir))]
+    (when (not found) (fail! :remove path :not-found))
+    (inode-update! fs (:ino dir) (fn [b o] (u32! b (+ o i-mtime) (now)) (u32! b (+ o i-ctime) (now))))))
+
+;; ── paths ─────────────────────────────────────────────────────────────────
+
+(defn parent-and-name
+  "[parent directory inode, last name] for path."
+  [fs path]
+  (let [comps (vec (split-path path))]
+    (when (empty? comps) (fail! :write path :is-root))
+    (let [parent (resolve-inode fs (str "/" (beer.string/join "/" (pop comps))) true)]
+      (when (not= (:type parent) :dir) (fail! :write path :not-a-directory))
+      [parent (last comps)])))
+
+;; ── public: writing ───────────────────────────────────────────────────────
+
+(defn write-file!
+  "Make the file at path hold data (a string or ByteBuffer), creating it
+  in an existing directory if needed."
+  [fs path data]
+  (writable! fs :write path)
+  (locked
+   (fn []
+     (let [buf (if (string? data) (beer.bytes/from-string data) data)
+           size (beer.bytes/capacity buf)
+           [parent nm] (parent-and-name fs path)
+           existing (lookup fs parent nm)
+           ino (or existing
+                   (let [i (alloc-inode! fs (group-of-inode fs (:ino parent)) false)]
+                     (init-inode! fs i 0x81A4 1)                   ; regular file, rw-r--r--
+                     (add-entry! fs parent nm i :file path)
+                     i))
+           inode (read-inode fs ino)]
+       (when (not= (:type inode) :file) (fail! :write path :not-a-file))
+       (free-blocks! fs (all-blocks fs inode))
+       (let [bs (:block-size fs)
+             goal (group-of-inode fs ino)
+             data-blocks (if (> size 0) (alloc-blocks! fs goal (ceil-div size bs)) [])
+             _ (write-data! fs data-blocks buf size)
+             [bmap extra] (build-map! fs goal data-blocks path)]
+         (inode-update! fs ino
+                        (fn [b o]
+                          (set-block-map! b o bmap)
+                          (u32! b (+ o i-size) (bit-and size 0xFFFFFFFF))
+                          (u32! b (+ o i-size-hi) (bit-shift-right size 32))
+                          (u32! b (+ o i-blocks) (* (+ (count data-blocks) extra) (quot bs 512)))
+                          (u32! b (+ o i-mtime) (now)) (u32! b (+ o i-ctime) (now)))))
+       (when (:flush! (:dev fs)) ((:flush! (:dev fs))))
+       nil))))
+
+(defn mkdir!
+  "Make the directory at path (its parent must exist)."
+  [fs path]
+  (writable! fs :mkdir path)
+  (locked
+   (fn []
+     (let [[parent nm] (parent-and-name fs path)]
+       (when (lookup fs parent nm) (fail! :mkdir path :exists))
+       (let [bs (:block-size fs)
+             ino (alloc-inode! fs (group-of-inode fs (:ino parent)) true)
+             blk (first (alloc-blocks! fs (group-of-inode fs ino) 1))
+             buf (beer.bytes/alloc bs)]
+         (put-entry! fs buf 0 ino 12 "." :dir)
+         (put-entry! fs buf 12 (:ino parent) (- bs 12) ".." :dir)
+         (write-block! fs blk buf)
+         (init-inode! fs ino 0x41ED 2)                            ; directory, rwxr-xr-x
+         (inode-update! fs ino (fn [b o]
+                                 (u32! b (+ o i-block) blk)
+                                 (u32! b (+ o i-size) bs)
+                                 (u32! b (+ o i-blocks) (quot bs 512))))
+         (add-entry! fs parent nm ino :dir path)
+         (inode-update! fs (:ino parent) (fn [b o] (u16! b (+ o i-links) (inc (u16 b (+ o i-links))))))
+         (when (:flush! (:dev fs)) ((:flush! (:dev fs))))
+         nil)))))
+
+(defn release-inode!
+  "Free an inode's blocks and the inode itself (links reached 0)."
+  [fs inode]
+  (free-blocks! fs (all-blocks fs inode))
+  (inode-update! fs (:ino inode) (fn [b o] (u16! b (+ o i-links) 0) (u32! b (+ o i-dtime) (now))))
+  (free-inode! fs (:ino inode) (= (:type inode) :dir)))
+
+(defn rm!
+  "Remove the file (or symlink) at path."
+  [fs path]
+  (writable! fs :rm path)
+  (locked
+   (fn []
+     (let [[parent nm] (parent-and-name fs path)
+           ino (lookup fs parent nm)]
+       (when (nil? ino) (fail! :rm path :not-found))
+       (let [inode (read-inode fs ino)]
+         (when (= (:type inode) :dir) (fail! :rm path :is-a-directory))
+         (remove-entry! fs parent nm path)
+         (if (<= (:links inode) 1)
+           (release-inode! fs inode)
+           (inode-update! fs ino (fn [b o] (u16! b (+ o i-links) (dec (:links inode)))))))
+       (when (:flush! (:dev fs)) ((:flush! (:dev fs))))
+       nil))))
+
+(defn rmdir!
+  "Remove the empty directory at path."
+  [fs path]
+  (writable! fs :rmdir path)
+  (locked
+   (fn []
+     (let [[parent nm] (parent-and-name fs path)
+           ino (lookup fs parent nm)]
+       (when (nil? ino) (fail! :rmdir path :not-found))
+       (let [inode (read-inode fs ino)]
+         (when (not= (:type inode) :dir) (fail! :rmdir path :not-a-directory))
+         (when (not (empty? (filter (fn [e] (and (not= (:name e) ".") (not= (:name e) "..")))
+                                    (dir-entries fs inode))))
+           (fail! :rmdir path :not-empty))
+         (remove-entry! fs parent nm path)
+         (release-inode! fs inode)
+         (inode-update! fs (:ino parent) (fn [b o] (u16! b (+ o i-links) (dec (u16 b (+ o i-links)))))))
+       (when (:flush! (:dev fs)) ((:flush! (:dev fs))))
+       nil))))

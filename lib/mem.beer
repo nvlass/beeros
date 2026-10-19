@@ -86,3 +86,10 @@
 
 ;; ramfb framebuffer (configured by beer.gfx when loaded)
 (def ramfb-base   0x8FBC0000)   ; __fb_start in virt-riscv.ld
+(def rtc-base     0x101000)     ; goldfish RTC: ns since 1970, low word first
+
+(defn unix-time
+  "Seconds since 1970 from the RTC (QEMU virt's goldfish RTC)."
+  []
+  (let [lo (read32 rtc-base) hi (read32 (+ rtc-base 4))]
+    (quot (+ lo (bit-shift-left hi 32)) 1000000000)))

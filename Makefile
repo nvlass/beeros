@@ -129,7 +129,7 @@ kernel/core_beer_blob.h: $(BEER_ROOT)/lib/core.beer
 	{ echo 'unsigned char core_beer[] = {'; xxd -i < $<; echo '};'; \
 	  echo "unsigned int core_beer_len = $$(wc -c < $< | tr -d ' ');"; } > $@
 
-.PHONY: all clean disasm run run-gfx disk run-disk _check_picolibc
+.PHONY: all clean disasm run run-gfx disk disk-present run-disk _check_picolibc
 
 all: _check_picolibc beeros.bin
 
@@ -142,7 +142,18 @@ ROOTFS_STAGE = build/rootfs
 ROOTFS_BEERLANG_LIBS = string json test digest crypto tar
 ROOTFS_DIRS = bin etc lib/beer pkg share/fonts tmp var
 
+# The image is writable (ext2 writes): running never rebuilds an existing
+# one, so what you saved on it stays. `make disk` rebuilds it from rootfs/
+# and packages/ when they changed, keeping the old one as disk.img.bak.
 disk: $(DISK_IMG)
+
+# For the run targets: build the image only if there is none; say so when
+# the sources are newer
+disk-present:
+	@[ -f $(DISK_IMG) ] || $(MAKE) disk
+	@if [ -n "$$(find rootfs packages -type f -newer $(DISK_IMG) | head -1)" ]; then \
+	  echo "note: rootfs/ or packages/ changed since $(DISK_IMG) was built;"; \
+	  echo "      'make disk' rebuilds it (the current one is kept as $(DISK_IMG).bak)"; fi
 
 # packages/<name>/ (beer.edn, src/, optional assets/) become /pkg/<name>.tar:
 # beer.edn and assets at the top, src's namespaces below it. ustar, without
@@ -151,7 +162,8 @@ PACKAGES = $(notdir $(wildcard packages/*))
 PKG_TAR  = COPYFILE_DISABLE=1 tar --format ustar
 
 $(DISK_IMG): Makefile $(shell find rootfs packages -type f) $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS))
-	rm -rf $(ROOTFS_STAGE) $@
+	rm -rf $(ROOTFS_STAGE)
+	if [ -f $@ ]; then mv $@ $@.bak; fi
 	mkdir -p $(addprefix $(ROOTFS_STAGE)/,$(ROOTFS_DIRS))
 	cp -R rootfs/. $(ROOTFS_STAGE)/
 	cp $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS)) $(ROOTFS_STAGE)/lib/beer/
@@ -162,7 +174,7 @@ $(DISK_IMG): Makefile $(shell find rootfs packages -type f) $(patsubst %,$(BEER_
 	$(MKE2FS) -q -t ext2 -L beeros -d $(ROOTFS_STAGE) $@ $(DISK_SIZE)
 
 # make run-disk: build the rootfs image and boot with it attached
-run-disk: disk
+run-disk: disk-present
 	$(MAKE) run BOARD=$(BOARD) DISK=$(DISK_IMG)
 
 # DISK=path/to/image.img attaches a raw image as a virtio-blk device
@@ -181,7 +193,7 @@ DISPLAY_BACKEND ?= cocoa
 # run-gfx attaches build/disk.img (built first) unless DISK is given;
 # DISK= boots without a disk
 run-gfx: DISK ?= $(DISK_IMG)
-run-gfx: _check_picolibc kernel/gfx_beer_blob.h $(if $(filter undefined,$(origin DISK)),$(DISK_IMG))
+run-gfx: _check_picolibc kernel/gfx_beer_blob.h $(if $(filter undefined,$(origin DISK)),disk-present)
 	$(MAKE) BOARD=$(BOARD) BEEROS_GFX=1
 	$(QEMU) -M virt -m 256M -bios none \
 	  -device ramfb -display $(DISPLAY_BACKEND) \

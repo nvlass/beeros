@@ -11,8 +11,9 @@ serial console.
 (beer.wm/open! {:cols 76 :rows 30})          ; a bigger window first helps
 ```
 
-Files under `/tmp` (a RAM file system, gone at reboot) can be saved; the
-ext2 disk is read-only so far, so saving there reports an error.
+Files save anywhere: on the ext2 disk (kept across reboots; `make
+run-gfx` doesn't rebuild an existing image) or under `/tmp` (RAM, gone at
+reboot).
 
 ## Keys
 

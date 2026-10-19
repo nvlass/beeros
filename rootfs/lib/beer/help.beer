@@ -4,7 +4,8 @@
 ;; At a REPL:
 ;;   (beer.help/describe 'beer.fs/ls)     ; a name: doc, kind, value
 ;;   (beer.help/apropos "mount")          ; names (and docstrings) matching
-;;   (beer.help/namespaces)               ; what there is
+;;   (beer.help/namespaces)               ; what is loaded
+;;   (beer.help/available)                ; what could be (require 'x)
 ;;   (beer.help/browse)                   ; the browser, on any tty
 ;; In the window manager F1 (or Ctrl-Alt-H) opens the browser in a window.
 ;;
@@ -84,6 +85,30 @@
                     (publics ns)))
             (namespaces))))
 
+(defn beer-files
+  "Paths of the .beer files under dir (recursively), relative to it."
+  [dir]
+  (let [entries (try (beer.fs/ls dir) (catch e []))]
+    (mapcat (fn [e]
+              (let [p (str dir e)
+                    t (try (:type (beer.fs/stat p)) (catch e nil))]
+                (cond (= t :dir) (map (fn [r] (str e "/" r)) (beer-files (str p "/")))
+                      (s/ends-with? e ".beer") [e]
+                      :else [])))
+            entries)))
+
+(defn available
+  "Namespaces with a file on *load-path* (/lib/, package tars) that aren't
+  loaded yet."
+  []
+  (let [loaded (set (namespaces))]
+    (sort (distinct
+           (filter (fn [n] (not (contains? loaded n)))
+                   (mapcat (fn [dir]
+                             (map (fn [f] (s/replace (s/replace (subs f 0 (- (count f) 5)) "/" ".") "_" "-"))
+                                  (beer-files dir)))
+                           beer.core/*load-path*))))))
+
 (defn doc-pages "Names of the pages in /share/doc." []
   (try (sort (filter (fn [f] (s/ends-with? f ".md")) (beer.fs/ls doc-dir))) (catch e [])))
 
@@ -132,9 +157,18 @@
       {:title "beeros help"
        :lines (vec (concat [["Namespaces (RET to open):" nil]]
                            (map (fn [n] [(str "  " n "  (" (count (publics n)) ")") [:ns n]]) (namespaces))
+                           [["" nil] ["Available, not loaded yet (RET loads):" nil]]
+                           (map (fn [n] [(str "  " n) [:load n]]) (available))
                            [["" nil] ["Pages:" nil]]
                            (map (fn [f] [(str "  " f) [:doc f]]) (doc-pages))
                            [["" nil] ["/ searches names and docstrings; q quits." nil]]))}
+      (= k :load)
+      (let [ns (second target)]
+        (try (require (symbol ns))
+             (page [:ns ns] w)
+             (catch e {:title (str "cannot load " ns)
+                       :lines (vec (map (fn [l] [l nil])
+                                        (wrap (str (if (map? e) (:message e) (pr-str e))) w)))})))
       (= k :ns)
       (let [ns (second target)]
         {:title (str "namespace " ns)
@@ -172,19 +206,27 @@
 
 (defn pad [x n] (if (>= (count x) n) (subs x 0 n) (str x (apply str (repeat (- n (count x)) " ")))))
 
+(defn fit
+  "Text cut to fit a row of a w-column terminal: at most w-1 characters
+  (a full row would leave the cursor waiting to wrap), $ where cut."
+  [text w]
+  (let [m (dec w)]
+    (if (> (count text) m) (str (subs text 0 (dec m)) "$") text)))
+
 (defn render!
-  "Write the rows that changed since last time; returns the new rows."
+  "Write the rows that changed since last time; returns the new rows.
+  Every row is cut to the width, so the terminal never wraps one."
   [st cols rows old]
-  (let [pg (:page st) h (- rows 2) top (:top st)
+  (let [pg (:page st) h (- rows 2) top (:top st) w (dec cols)
         body (map (fn [i] (let [r (+ top i) l (get (:lines pg) r)]
                             (cond (nil? l) ""
-                                  (= r (:sel st)) (str csi "7m" (pad (first l) cols) csi "0m")
-                                  (second l) (str csi "4m" (first l) csi "0m")
-                                  :else (first l))))
+                                  (= r (:sel st)) (str csi "7m" (pad (fit (first l) cols) w) csi "0m")
+                                  (second l) (str csi "4m" (fit (first l) cols) csi "0m")
+                                  :else (fit (first l) cols))))
                   (range h))
-        new (vec (concat [(str csi "7m" (pad (str " " (:title pg)) cols) csi "0m")]
+        new (vec (concat [(str csi "7m" (pad (fit (str " " (:title pg)) cols) w) csi "0m")]
                          body
-                         [(pad (or (:prompt st) " RET open  DEL back  / search  g home  q quit") cols)]))
+                         [(pad (fit (or (:prompt st) " RET open  DEL back  / search  g home  q quit") cols) w)]))
         out (apply str (map (fn [i] (if (= (nth new i) (get old i)) ""
                                         (str csi (inc i) ";1H" (nth new i) csi "K")))
                             (range (count new))))]

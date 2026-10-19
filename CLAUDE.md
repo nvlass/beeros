@@ -281,7 +281,8 @@ composited through a C owner map (`own!`, `present!`, `fill-owned!`;
 docs/console.md "Window manager".
 
 **Help.** `beer.help` (`rootfs/lib/beer/help.beer`): `describe`, `apropos`,
-`namespaces`, `browse` (a tty app: namespaces → names → docstrings and
+`namespaces`, `available` (files on `*load-path*` not loaded yet; RET in
+the browser requires them), `browse` (a tty app: namespaces → names → docstrings and
 values, `docs/*.md` copied to `/share/doc` with `ns/name` links). F1 or
 Ctrl-Alt-H in the WM opens it in a window (`beer.wm/open! {:run f}`).
 Docstrings are what there is to browse: give new public fns one, and

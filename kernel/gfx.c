@@ -274,3 +274,59 @@ void gfx_fill_owned(int id, int64_t x, int64_t y, int64_t w, int64_t h, uint32_t
     }
     cursor_show_again(hid);
 }
+
+/* ── images ────────────────────────────────────────────────────────────── */
+
+/* Copy a w x h block of XRGB pixels (stride bytes per row) to surface id
+ * at (x,y); pixels equal to key are skipped when key >= 0. Clipped. */
+void gfx_blit_pixels_on(int id, int64_t x, int64_t y, const uint8_t* px, int64_t w, int64_t h,
+                        int64_t stride, int64_t key) {
+    Target* t = target(id);
+    if (!t) return;
+    int64_t ox = x, oy = y;
+    if (!clip(&x, &y, &w, &h, t->w, t->h)) return;
+    px += (y - oy) * stride + (x - ox) * 4;
+    bool hid = id == 0 && cursor_hide_for(x, y, w, h);
+    for (int64_t r = 0; r < h; r++) {
+        const uint32_t* src = (const uint32_t*)(px + r * stride);
+        uint32_t* dst = t->px + (y + r) * t->w + x;
+        if (key < 0) memcpy(dst, src, (size_t)w * 4);
+        else
+            for (int64_t c = 0; c < w; c++)
+                if ((src[c] & 0xFFFFFF) != (uint32_t)key) dst[c] = src[c];
+    }
+    cursor_show_again(hid);
+}
+
+/* Copy surface src's (sx,sy,w,h) to surface dst at (dx,dy), each pixel as
+ * a scale x scale square (dst may be 0, the screen) */
+void gfx_blit_surface(int src, int64_t sx, int64_t sy, int64_t w, int64_t h,
+                      int dst, int64_t dx, int64_t dy, int64_t scale) {
+    Target* s = target(src);
+    Target* d = target(dst);
+    if (!s || !d || src == dst || scale < 1) return;
+    if (!clip(&sx, &sy, &w, &h, s->w, s->h)) return;
+    bool hid = dst == 0 && cursor_hide_for(dx, dy, w * scale, h * scale);
+    for (int64_t r = 0; r < h; r++) {
+        const uint32_t* row = s->px + (sy + r) * s->w + sx;
+        for (int64_t k = 0; k < scale; k++) {
+            int64_t py = dy + r * scale + k;
+            if (py < 0 || py >= d->h) continue;
+            uint32_t* out = d->px + py * d->w;
+            if (scale == 1) {
+                int64_t c0 = dx < 0 ? -dx : 0, c1 = dx + w > d->w ? d->w - dx : w;
+                if (c1 > c0) memcpy(out + dx + c0, row + c0, (size_t)(c1 - c0) * 4);
+                continue;
+            }
+            for (int64_t c = 0; c < w; c++) {
+                uint32_t v = row[c];
+                int64_t px0 = dx + c * scale;
+                for (int64_t m = 0; m < scale; m++) {
+                    int64_t pxx = px0 + m;
+                    if (pxx >= 0 && pxx < d->w) out[pxx] = v;
+                }
+            }
+        }
+    }
+    cursor_show_again(hid);
+}

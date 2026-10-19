@@ -61,9 +61,10 @@ beeros/
 │   └── gfx.beer       ← beerlang drawing library
 ├── rootfs/            ← root filesystem contents (etc/init.beer, etc/beeros.edn, lib/, bin/)
 │   └── lib/beer/      ← term.beer (beer.term: VT100 emulator + REPL), font.beer (PSF fonts),
-│                         wm.beer (beer.wm: window manager), help.beer (beer.help: docs browser)
+│                         wm.beer (beer.wm: window manager), help.beer (beer.help: docs browser),
+│                         image.beer (beer.image: BMP)
 ├── packages/<name>/   ← packages (beer.edn, src/, assets/) → /pkg/<name>.tar:
-│                         hello (sample), beermacs (editor, docs/beermacs.md)
+│                         hello (sample), beermacs (editor, docs/beermacs.md), bounce (canvas demo)
 ├── scripts/qemu-drive.py ← scripted REPL + monitor/QMP input for QEMU tests
 └── Makefile
 ```
@@ -285,6 +286,12 @@ values, `docs/*.md` copied to `/share/doc` with `ns/name` links). F1 or
 Ctrl-Alt-H in the WM opens it in a window (`beer.wm/open! {:run f}`).
 Docstrings are what there is to browse: give new public fns one.
 
+**Canvases.** `beer.wm/canvas!` is a window you draw in (games): its own
+surface, `show!` scales it to the screen, an `:events` channel with keys,
+buttons, pointer, `:close`; `:fullscreen true`. `beer.image` loads BMP.
+`beer.pkg/start` runs a package as a program (own task; a terminal window,
+or none with `:terminal false` in `beer.edn`). Example: `packages/bounce`.
+
 ## Graphics driver (`beer.gfx`)
 
 Two-layer architecture, no beerlang submodule changes:
@@ -297,8 +304,9 @@ Two-layer architecture, no beerlang submodule changes:
 **Layer 2 — `beer.gfx` namespace** (`kernel/gfx_natives.c`, `lib/gfx.beer`):
 - Natives registered at boot: `set-pixel!`, `fill-rect!`, `width`, `height`, `rgb`, `clear!`,
   `blit-bits!` (1-bit bitmap from a ByteBuffer, scaled; font glyphs), `copy-rect!` (scrolling);
-  off-screen surfaces (`surface`, `surface-free!`, `*-on!` variants) and compositing
-  (`own!`, `owner-at`, `present!`, `fill-owned!`, `cursor!`)
+  off-screen surfaces (`surface`, `surface-free!`, `*-on!` variants), compositing
+  (`own!`, `owner-at`, `present!`, `fill-owned!`, `cursor!`), colour images
+  (`blit-pixels!`: XRGB from a ByteBuffer, colour key) and `blit-surface!` (scaled copy)
 - `lib/gfx.beer` embedded at build time via `xxd -i` → `kernel/gfx_beer_blob.h`, then compiled and run using the same reader→compiler→scheduler pattern as the REPL
 - Higher-level functions in `lib/gfx.beer`: `line!` (Bresenham), `circle!` (midpoint), `rect!` (outlined), `text!` (8×8 bitmap font), `color`, `clear!`
 

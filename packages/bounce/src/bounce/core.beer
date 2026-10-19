@@ -1,0 +1,90 @@
+;; bounce — a tiny canvas demo for beeros
+;;
+;;   (beer.pkg/start "bounce")          ; in a window of its own
+;;   (beer.pkg/start "bounce" "full")   ; full screen
+;;
+;; Left/Right move the paddle, a click adds a ball, q (or the close box)
+;; quits. The whole game is one state map: read events, step, draw, show.
+
+(ns bounce.core
+  (:require [beer.image :as img]
+            [beer.font]))
+
+(def W 320)
+(def H 200)
+(def paddle-w 48)
+(def sky 0x1B2A41)
+(def wood 0xC08040)
+
+(def font (beer.font/builtin))
+
+(defn text! [s x y str color]
+  (let [n (count str)]
+    (loop [i 0 x x]
+      (when (< i n)
+        (beer.font/draw-glyph-on! s font x y (beer.font/glyph font (int (nth str i))) color nil 1)
+        (recur (inc i) (+ x 8))))))
+
+(defn ball [x y dx dy] {:x x :y y :dx dx :dy dy})
+
+(defn on-event [st ev]
+  (let [t (:type ev)]
+    (cond
+      (= t :close) (assoc st :quit? true)
+      (= t :key) (cond (and (:down? ev) (= (:key ev) :q)) (assoc st :quit? true)
+                       (:down? ev) (assoc st :held (conj (:held st) (:key ev)))
+                       :else (assoc st :held (disj (:held st) (:key ev))))
+      (and (= t :button) (:down? ev))
+      (assoc st :balls (conj (:balls st) (ball (- (:x ev) 8) (- (:y ev) 8)
+                                               (if (even? (count (:balls st))) 2 -2) -3)))
+      :else st)))
+
+(defn step-ball [st b]
+  (let [x (+ (:x b) (:dx b)) y (+ (:y b) (:dy b))
+        dx (if (or (< x 0) (> x (- W 16))) (- (:dx b)) (:dx b))
+        dy (cond (< y 0) (- (:dy b))
+                 (and (> (:dy b) 0) (>= (+ y 16) (- H 8)) (< (+ y 16) H)
+                      (> (+ x 16) (:paddle st)) (< x (+ (:paddle st) paddle-w)))
+                 (- (:dy b))
+                 :else (:dy b))]
+    (assoc b :x (max 0 (min x (- W 16))) :y y :dx dx :dy dy)))
+
+(defn step [st]
+  (let [p (:paddle st)
+        p (cond (contains? (:held st) :left)  (max 0 (- p 6))
+                (contains? (:held st) :right) (min (- W paddle-w) (+ p 6))
+                :else p)
+        st (assoc st :paddle p)
+        moved (map (fn [b] (step-ball st b)) (:balls st))
+        kept (vec (filter (fn [b] (< (:y b) H)) moved))]
+    (assoc st :balls kept
+              :missed (+ (:missed st) (- (count moved) (count kept)))
+              :frame (inc (:frame st)))))
+
+(defn draw! [c st sprite]
+  (let [s (:surface c)]
+    (beer.gfx/fill-rect-on! s 0 0 W H sky)
+    (beer.gfx/fill-rect-on! s (:paddle st) (- H 8) paddle-w 6 wood)
+    (doseq [b (:balls st)] (img/draw! s sprite (:x b) (:y b) 0xFF00FF))
+    (text! s 4 4 (str "balls " (count (:balls st)) "  missed " (:missed st)) 0xFFFFFF)
+    (text! s 4 (- H 20) "click: ball  arrows: paddle  q: quit" 0x8090A0)
+    (beer.wm/show! c)))
+
+(defn -main
+  "Run the demo; \"full\" for full screen."
+  [& args]
+  (let [full? (= (first args) "full")
+        c (beer.wm/canvas! {:w W :h H :scale 3 :title "bounce" :fullscreen full?})
+        sprite (img/parse-bmp (beer.pkg/resource-bytes "bounce" "assets/ball.bmp"))]
+    (try
+      (loop [st {:balls [(ball 40 40 2 2) (ball 200 80 -3 2)] :paddle 136 :held #{}
+                 :missed 0 :frame 0 :quit? false}]
+        (let [t0 (nano-time)
+              st (loop [st st] (let [ev (poll! (:events c))] (if ev (recur (on-event st ev)) st)))]
+          (when (not (:quit? st))
+            (let [st (step st)]
+              (draw! c st sprite)
+              (sleep (max 1 (- 33 (quot (- (nano-time) t0) 1000000))))
+              (recur st)))))
+      (finally (beer.wm/close-canvas! c)))
+    nil))

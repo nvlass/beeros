@@ -242,6 +242,36 @@ static Value native_gfx_cursor(VM* vm, int argc, Value* argv) {
     return VALUE_NIL;
 }
 
+/* (blit-pixels! surface x y buf off w h stride key) — XRGB8888 pixels
+ * (u32 little-endian 0x00RRGGBB) from a ByteBuffer; key: a colour to skip,
+ * or nil */
+static Value native_gfx_blit_pixels(VM* vm, int argc, Value* argv) {
+    if (argc != 9 || !is_bytebuffer(argv[3])) {
+        vm_error(vm, "blit-pixels!: (blit-pixels! surface x y buf off w h stride key)");
+        return VALUE_NIL;
+    }
+    if (!fixnums(vm, "blit-pixels!", argv, 0, 8, 3)) return VALUE_NIL;
+    int64_t off = I(4), w = I(5), h = I(6), stride = I(7);
+    if (w <= 0 || h <= 0) return VALUE_NIL;
+    if (off < 0 || stride < w * 4 || (uint64_t)(off + (h - 1) * stride + w * 4) > bytebuffer_capacity(argv[3])) {
+        vm_error(vm, "blit-pixels!: pixels outside the buffer");
+        return VALUE_NIL;
+    }
+    gfx_blit_pixels_on((int)I(0), I(1), I(2), bytebuffer_data(argv[3]) + off, w, h, stride,
+                       is_fixnum(argv[8]) ? I(8) : -1);
+    return VALUE_NIL;
+}
+
+/* (blit-surface! src sx sy w h dst dx dy scale) */
+static Value native_gfx_blit_surface(VM* vm, int argc, Value* argv) {
+    if (argc != 9 || !fixnums(vm, "blit-surface!", argv, 0, 9, -1)) {
+        if (argc != 9) vm_error(vm, "blit-surface!: (blit-surface! src sx sy w h dst dx dy scale)");
+        return VALUE_NIL;
+    }
+    gfx_blit_surface((int)I(0), I(1), I(2), I(3), I(4), (int)I(5), I(6), I(7), I(8));
+    return VALUE_NIL;
+}
+
 #undef I
 
 /* ── namespace registration ─────────────────────────────────────────────── */
@@ -267,6 +297,8 @@ void gfx_register_natives(void) {
     reg(ns, "present!",      native_gfx_present);
     reg(ns, "fill-owned!",   native_gfx_fill_owned);
     reg(ns, "cursor!",       native_gfx_cursor);
+    reg(ns, "blit-pixels!",  native_gfx_blit_pixels);
+    reg(ns, "blit-surface!", native_gfx_blit_surface);
 }
 
 /* ── load embedded lib/gfx.beer ─────────────────────────────────────────── */

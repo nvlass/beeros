@@ -1,0 +1,60 @@
+;; beer.image — images as data: {:w :h :pixels ByteBuffer :stride}
+;;
+;; :pixels holds XRGB8888 (u32 little-endian 0x00RRGGBB), top row first,
+;; which is what beer.gfx/blit-pixels! draws.
+;;
+;;   (def img (beer.image/load "/share/img/ball.bmp"))      ; or (parse-bmp bytes)
+;;   (beer.image/draw! (:surface canvas) img 10 20 0xFF00FF) ; magenta = transparent
+;;
+;; BMP: uncompressed 24- and 32-bit (BI_RGB / BI_BITFIELDS), bottom-up or
+;; top-down; what `sips -s format bmp` or most editors write.
+
+(ns beer.image)
+
+(defn u16 [b o] (beer.bytes/u16le b o))
+(defn u32 [b o] (beer.bytes/u32le b o))
+(defn i32 [b o] (beer.bytes/i32le b o))
+
+(defn fail! [why] (throw (ex-info (str "image: " why) {:reason why})))
+
+(defn parse-bmp
+  "An image from the bytes of a BMP file."
+  [b]
+  (when (not (and (= (beer.bytes/u8 b 0) 66) (= (beer.bytes/u8 b 1) 77))) (fail! "not a BMP"))
+  (let [data  (u32 b 10)
+        w     (i32 b 18)
+        h0    (i32 b 22)
+        bpp   (u16 b 28)
+        comp  (u32 b 30)
+        h     (if (< h0 0) (- h0) h0)
+        down? (> h0 0)                             ; bottom-up rows
+        src-stride (* 4 (quot (+ (* w bpp) 31) 32))
+        stride (* 4 w)
+        px (beer.bytes/alloc (* stride h))]
+    (when (not (or (= comp 0) (= comp 3))) (fail! "compressed BMP"))
+    (when (not (or (= bpp 24) (= bpp 32))) (fail! (str bpp "-bit BMP (24 or 32 only)")))
+    (loop [r 0]
+      (when (< r h)
+        (let [src (+ data (* src-stride (if down? (- h 1 r) r)))
+              dst (* r stride)]
+          (if (= bpp 32)
+            (beer.bytes/copy! px dst b src stride)       ; B G R A = 0xAARRGGBB
+            (loop [c 0]
+              (when (< c w)
+                (let [o (+ src (* 3 c))]
+                  (beer.bytes/u32le! px (+ dst (* 4 c))
+                                     (bit-or (bit-shift-left (beer.bytes/u8 b (+ o 2)) 16)
+                                             (bit-shift-left (beer.bytes/u8 b (+ o 1)) 8)
+                                             (beer.bytes/u8 b o))))
+                (recur (inc c))))))
+        (recur (inc r))))
+    {:w w :h h :pixels px :stride stride}))
+
+(defn load "An image from a BMP file." [path] (parse-bmp (beer.fs/read-bytes path)))
+
+(defn draw!
+  "Draw img on surface s at (x,y); pixels of colour key (0xRRGGBB) are
+  transparent, or none if key is nil."
+  ([s img x y] (draw! s img x y nil))
+  ([s img x y key]
+   (beer.gfx/blit-pixels! s x y (:pixels img) 0 (:w img) (:h img) (:stride img) key)))

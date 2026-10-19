@@ -18,6 +18,8 @@
 ;;
 ;;   (beer.wm/start! {:cols 48 :rows 14 :scale 2})
 ;;   (beer.wm/open! {:x 100 :y 80})
+;;   (def c (beer.wm/canvas! {:w 320 :h 200 :scale 2}))   ; a window to draw in
+;;   (beer.gfx/fill-rect-on! (:surface c) 10 10 50 50 0xFF0000) (beer.wm/show! c)
 
 (ns beer.wm
   (:require [beer.term] [beer.font]))
@@ -48,6 +50,7 @@
   [(- (:w w) border tab-h) border tab-h])
 
 (defn draw-frame! [w focused?]
+  (when (not= false (:frame? w))
   (let [s (:surf w) ww (:w w) wh (:h w)
         [bx by bs] (close-box w)]
     (beer.gfx/fill-rect-on! s 0 0 ww border border-color)
@@ -64,7 +67,7 @@
       (when (< i (- bs 8))
         (beer.gfx/fill-rect-on! s (+ bx 4 i) (+ by 4 i) 1 1 tab-text)
         (beer.gfx/fill-rect-on! s (- (+ bx bs) 5 i) (+ by 4 i) 1 1 tab-text)
-        (recur (inc i))))))
+        (recur (inc i)))))))
 
 ;; ── compositing ───────────────────────────────────────────────────────────
 
@@ -144,7 +147,9 @@
   ([id]
    (let [w (window id)]
      (when w
-       (beer.term/close! (:term w))
+       (if (:term w)
+         (beer.term/close! (:term w))
+         (offer! (:keys w) {:type :close}))
        (swap! state (fn [st] (assoc st :windows (vec (filter (fn [x] (not= (:id x) id)) (:windows st)))
                                     :focus (when (not= (:focus st) id) (:focus st)))))
        (beer.gfx/surface-free! (:surf w))
@@ -162,6 +167,87 @@
   (swap! state (fn [st] (assoc st :windows (vec (map (fn [w] (if (= (:id w) id) (assoc w :x x :y y) w))
                                                     (:windows st))))))
   nil)
+
+;; ── canvases: windows you draw in ───────────────────────────────────────
+
+(defn canvas-of [w] (:canvas w))
+
+(defn canvas-point
+  "Pointer position in canvas w's coordinates, or nil if outside it."
+  [w]
+  (let [[px py] (:pointer @state)
+        c (:canvas w)
+        [ox oy] (:content w)
+        x (quot (- px (:x w) ox) (:scale c))
+        y (quot (- py (:y w) oy) (:scale c))]
+    (when (and (>= (- px (:x w) ox) 0) (>= (- py (:y w) oy) 0) (< x (:w c)) (< y (:h c)))
+      [x y])))
+
+(defn canvas-under-pointer? [w]
+  (let [[px py] (:pointer @state)] (and (= w (window-at px py)) (canvas-point w))))
+
+(defn canvas-event! [w ev]
+  (let [p (canvas-point w)]
+    (when p (offer! (:keys w) (assoc ev :x (first p) :y (second p))))))
+
+(defn pointer-moved! []
+  (let [w (focused)]
+    (when (and w (:canvas w) (not (:drag @state)) (canvas-under-pointer? w))
+      (canvas-event! w {:type :pointer}))))
+
+(defn show!
+  "Show what was drawn on canvas c's surface (scaled), now."
+  [c]
+  (let [w (window (:id c))]
+    (when w
+      (let [[ox oy] (:content w) sc (:scale c)
+            cw (* sc (:w c)) ch (* sc (:h c))]
+        (beer.gfx/blit-surface! (:surface c) 0 0 (:w c) (:h c) (:surf w) ox oy sc)
+        (beer.gfx/present! (:surf w) ox oy cw ch (+ (:x w) ox) (+ (:y w) oy))))
+    nil))
+
+(defn close-canvas!
+  "Close canvas c (its window, if the WM hasn't already) and free its surface."
+  [c]
+  (when (window (:id c)) (close! (:id c)))
+  (beer.gfx/surface-free! (:surface c))
+  nil)
+
+(defn canvas!
+  "A window you draw in. Returns {:id :surface :w :h :scale :events}: draw
+  on :surface (a beer.gfx surface, w x h; fill-rect-on!, blit-pixels!,
+  ...) and (show! c) to put it on screen, each pixel scale x scale.
+  :events is a channel of the window's input while it has the focus: key
+  events (down and up, as from beer.input), {:type :button :button :down?
+  :x :y}, {:type :pointer :x :y}, {:type :wheel :delta :x :y}, and
+  {:type :close} when the WM closes it (then call close-canvas!).
+  Ctrl-\\ interrupts the task that made it. Options: :w :h (320x200)
+  :scale (2) :title :x :y, :fullscreen true (no frame, the whole screen,
+  scale chosen to fit)."
+  ([] (canvas! {}))
+  ([opts]
+   (let [cw (get opts :w 320) ch (get opts :h 200)
+         full? (:fullscreen opts)
+         sw (beer.gfx/width) sh (beer.gfx/height)
+         scale (if full? (max 1 (min (quot sw cw) (quot sh ch))) (get opts :scale 2))
+         [w h ox oy] (if full?
+                       [sw sh (quot (- sw (* scale cw)) 2) (quot (- sh (* scale ch)) 2)]
+                       [(+ (* 2 border) (* scale cw)) (+ border tab-h border (* scale ch) border)
+                        border (+ border tab-h border)])
+         n (:next @state)
+         x (if full? 0 (max 0 (min (get opts :x (+ 40 (* 24 (rem n 10)))) (- sw w))))
+         y (if full? 0 (max 0 (min (get opts :y (+ 40 (* 24 (rem n 10)))) (- sh h))))
+         ws (beer.gfx/surface w h)
+         us (beer.gfx/surface cw ch)]
+     (when (or (nil? ws) (nil? us)) (throw (ex-info "wm: no free surface" {:reason :no-surface})))
+     (let [events (chan 256)
+           c {:id n :surface us :w cw :h ch :scale scale :events events}
+           win {:id n :surf ws :x x :y y :w w :h h :title (get opts :title (str "canvas " n))
+                :keys events :canvas c :content [ox oy] :frame? (not full?)
+                :owner (current-task)}]
+       (swap! state (fn [st] (assoc st :next (inc n) :windows (conj (:windows st) win))))
+       (focus! n)
+       c))))
 
 ;; ── input ─────────────────────────────────────────────────────────────────
 
@@ -184,12 +270,15 @@
     (if (nil? w)
       (open! {:x px :y py})
       (let [lx (- px (:x w)) ly (- py (:y w))
-            [bx by bs] (close-box w)]
+            [bx by bs] (close-box w)
+            framed? (not= false (:frame? w))]
         (cond
-          (and (>= lx bx) (< lx (+ bx bs)) (>= ly by) (< ly (+ by bs))) (close! (:id w))
-          (< ly (+ border tab-h)) (do (focus! (:id w))
-                                      (swap! state (fn [st] (assoc st :drag [(:id w) lx ly]))))
-          :else (when (not= (:focus @state) (:id w)) (focus! (:id w))))))))
+          (and framed? (>= lx bx) (< lx (+ bx bs)) (>= ly by) (< ly (+ by bs))) (close! (:id w))
+          (and framed? (< ly (+ border tab-h))) (do (focus! (:id w))
+                                                    (swap! state (fn [st] (assoc st :drag [(:id w) lx ly]))))
+          (not= (:focus @state) (:id w)) (focus! (:id w))
+          (:canvas w) (canvas-event! w {:type :button :button :left :down? true})
+          :else nil)))))
 
 (defn drag-to! []
   (let [st @state [id ox oy] (:drag st) [px py] (:pointer st)]
@@ -229,12 +318,20 @@
     (cond
       (= t :key)    (when (not (wm-key? ev))
                       (let [w (focused)] (when w (offer! (:keys w) ev))))
-      (= t :motion) (let [[x y] (:pointer @state)] (pointer! (+ x (:dx ev)) (+ y (:dy ev))))
-      (= t :abs)    (pointer! (int (* (:x ev) (beer.gfx/width))) (int (* (:y ev) (beer.gfx/height))))
-      (= t :button) (when (= (:button ev) :left)
-                      (if (:down? ev)
-                        (on-press!)
-                        (do (drag-to!) (swap! state (fn [st] (assoc st :drag nil))))))
+      (= t :motion) (let [[x y] (:pointer @state)]
+                      (pointer! (+ x (:dx ev)) (+ y (:dy ev)))
+                      (pointer-moved!))
+      (= t :abs)    (do (pointer! (int (* (:x ev) (beer.gfx/width))) (int (* (:y ev) (beer.gfx/height))))
+                        (pointer-moved!))
+      (= t :button) (cond
+                      (and (= (:button ev) :left) (:down? ev)) (on-press!)
+                      (and (= (:button ev) :left) (:drag @state))
+                      (do (drag-to!) (swap! state (fn [st] (assoc st :drag nil))))
+                      :else (let [w (focused)]
+                              (when (and w (:canvas w) (canvas-under-pointer? w))
+                                (canvas-event! w {:type :button :button (:button ev) :down? (:down? ev)}))))
+      (= t :wheel)  (let [w (focused)]
+                      (when (and w (:canvas w)) (canvas-event! w {:type :wheel :delta (:delta ev)})))
       :else nil)))
 
 (defn run-loop []
@@ -254,7 +351,11 @@
      (swap! state (fn [st] (assoc st :opts opts)))
      (reset! beer.tty/use-keyboard? false)
      (reset! beer.tty/keyboard-interrupt
-             (fn [kind] (let [w (focused)] (when w (beer.term/interrupt-key! (:term w) kind)))))
+             (fn [kind] (let [w (focused)]
+                          (cond (nil? w) nil
+                                (:term w) (beer.term/interrupt-key! (:term w) kind)
+                                (and (= kind :hard) (:owner w)) (do (interrupt! (:owner w)) true)
+                                :else nil))))
      (restack!)
      (pointer! (quot (beer.gfx/width) 2) (quot (beer.gfx/height) 2))
      (open! {})

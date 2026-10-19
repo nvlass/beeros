@@ -171,6 +171,21 @@ From a REPL: `(beer.wm/open! {:x 100 :y 80 :cols 60})` (`:run f` runs f in
 the window instead of a REPL; it closes when f returns), `(beer.wm/close!)`,
 `(beer.wm/focus! id)`, `@beer.wm/state`.
 
+**Canvases (games, drawing programs).** `(beer.wm/canvas! {:w 320 :h 200
+:scale 3 :title "x"})` opens a window that is just a surface: draw on
+`(:surface c)` with the `beer.gfx` `*-on!` calls (`fill-rect-on!`,
+`blit-pixels!` for colour images, `blit-bits-on!` for 1-bit glyphs),
+then `(beer.wm/show! c)` copies it, scaled, to the screen. `(:events c)`
+is a channel: key events (down and up), `{:type :button :button :down?
+:x :y}`, `{:type :pointer :x :y}`, `{:type :wheel ...}` in canvas
+coordinates while it has the focus, and `{:type :close}` when the WM
+closes it; finish with `(beer.wm/close-canvas! c)`. `:fullscreen true`
+drops the frame and fills the screen (scale chosen to fit; Ctrl-Alt-Tab
+still switches away). Ctrl-\\ interrupts the task that made the canvas.
+Images: `beer.image` (`/lib/beer/image.beer`) loads 24/32-bit BMP into
+`{:w :h :pixels :stride}` and `draw!`s them with a colour key. The
+`bounce` package is a small example (`(beer.pkg/start "bounce")`).
+
 **Compositing.** Each window draws into its own off-screen surface
 (`beer.gfx/surface`, `fill-rect-on!` / `blit-bits-on!` / `copy-rect-on!`;
 surface 0 is the screen). An owner map in C says which surface each screen

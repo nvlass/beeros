@@ -45,6 +45,13 @@ int      gfx_owner_at(int64_t x, int64_t y);
 void     gfx_present(int id, int64_t sx, int64_t sy, int64_t w, int64_t h, int64_t dx, int64_t dy);
 void     gfx_fill_owned(int id, int64_t x, int64_t y, int64_t w, int64_t h, uint32_t color);
 
+/* XRGB pixels from memory to a surface (key >= 0: that colour is
+ * transparent), and surface to surface at an integer scale */
+void     gfx_blit_pixels_on(int id, int64_t x, int64_t y, const uint8_t* px, int64_t w, int64_t h,
+                            int64_t stride, int64_t key);
+void     gfx_blit_surface(int src, int64_t sx, int64_t sy, int64_t w, int64_t h,
+                          int dst, int64_t dx, int64_t dy, int64_t scale);
+
 /* Software mouse cursor at (x,y), drawn over everything */
 void     gfx_cursor(int32_t x, int32_t y, bool show);
 

@@ -11,6 +11,7 @@
 ;;   (run "hello" "you")          ; require :main, call (-main "you")
 ;;   (resource "hello" "assets/banner.txt")
 ;;   (exec "hello" "you")         ; /bin/hello.beer with *args* ["you"]
+;;   (start "beermacs" "/x")      ; like a program: its own task (and window)
 ;;   (rescan!)                    ; after copying a tar in
 
 (ns beer.pkg)
@@ -99,6 +100,23 @@
     (require main)
     (apply (eval (symbol (str main "/-main")))
            (if (empty? args) (or (:args edn) []) args))))
+
+(defn wm-running? []
+  (try (not (nil? (:task @beer.wm/state))) (catch e false)))
+
+(defn start
+  "Run a package like a program: in a task of its own, with fresh
+  bindings (*ns* user), not in the caller's. Under the window manager it
+  gets a terminal window of its own, unless its beer.edn says
+  :terminal false (a program that opens a canvas, say): then it is just a
+  task. Returns the window id or the task."
+  [x & args]
+  (let [tar (find-package x)
+        edn (or (project tar) {})
+        go  (fn [] (apply run x args))]
+    (if (and (not= false (:terminal edn)) (wm-running?))
+      (beer.wm/open! (merge {:title (or (:name edn) (str x)) :run go} (:window edn)))
+      (spawn (fn [] (binding [*ns* 'user] (go)))))))
 
 (defn resource
   "A file of the package as a string."

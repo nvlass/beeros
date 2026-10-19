@@ -45,25 +45,19 @@ Writing files, mkdir, rm, rmdir work (2026-10-19). Still to do: `mv`
 files (> 64 MiB with 1 KiB blocks), growing a directory past 12 blocks,
 and a write-back cache (every write goes to the device now).
 
-### Games: canvas windows, colour blits, full screen
+### Games: next steps
 
-What's there: raw key down/up and held keys (`beer.input/down?`), mouse
-and tablet events, fills, 1-bit scaled blits, rect copies, surfaces,
-`nano-time`/`sleep`. Missing, all small:
+Done (2026-10-19): `beer.wm/canvas!` (own surface, scaled `show!`, events
+with keys up/down, buttons, pointer, wheel, close; `:fullscreen`),
+`beer.gfx/blit-pixels!` and `blit-surface!`, `beer.image` (BMP),
+`beer.pkg/start`, the `bounce` demo. Next:
 
-1. `beer.wm/canvas!`: a window that is just a surface, with its key AND
-   mouse events (window-relative) on a channel; today the WM keeps mouse
-   events and only hosts terminals.
-2. `beer.gfx/blit-pixels!` (XRGB ByteBuffer rect -> surface, optional
-   colour key) and a scaled present (draw at 320x200, show at 1280x720);
-   a QOI/BMP loader in beerlang.
-3. Full screen under the WM (a borderless window over everything) and
-   without it (draw on surface 0).
-4. Later: sound (virtio-sound), vsync-ish frame pacing.
-
-Speed: game logic in beerlang is fine (~3 us per loop iteration under
-QEMU TCG); per-pixel work must go through C natives or a low-res surface
-scaled up. Real RISC-V hardware should be 10-30x faster than TCG.
+- Sound (virtio-sound); vsync-ish pacing (ramfb has no vblank: sleep).
+- QOI and PNG-less sprite sheets; `beer.image/sub` for sheet cells.
+- Pointer grab / hide for full-screen games; relative mouse motion
+  events for mouse-look.
+- Speed: `show!` copies the whole canvas each frame (fine at 320x200);
+  dirty rectangles if needed.
 
 ### A graphics editor for serious work
 
@@ -71,13 +65,6 @@ Next to beermacs (which stays the small, hackable one): draws straight
 into a `beer.wm` surface — fonts, colours, split views, mouse — on the
 same text model (`beermacs.buffer`). Wants a PSF font in `/share/fonts`
 (e.g. Terminus) chosen in `/etc/beeros.edn`.
-
-### `beer.pkg/start`: run a package like a program
-
-`run`/`exec` run in the caller's task (like bash's `source`). Add
-`(beer.pkg/start "beermacs" & args)`: a new task with fresh bindings
-(`*ns*` user, its own output); under beer.wm in a new window, else in the
-background (like `&`).
 
 ### Actors and named channels
 

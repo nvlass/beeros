@@ -155,3 +155,14 @@ program can't block.
 
 Until `beer build` writes `beer.edn` into the tar, a package can be made
 with plain `tar -cf snake.tar beer.edn -C src .`.
+
+## Starting a package like a program
+
+`(beer.pkg/run "x" & args)` calls the package's `-main` in the caller's
+task (like bash's `source`: same namespace, output and tty).
+`(beer.pkg/start "x" & args)` runs it as a program instead: its own task,
+fresh bindings (`*ns*` user); under the window manager in a terminal
+window of its own, or, when its `beer.edn` has `:terminal false` (a
+program that opens a canvas, like `bounce`), as a background task.
+`:window {...}` in `beer.edn` passes options to that window (`:cols`,
+`:rows`, ...).

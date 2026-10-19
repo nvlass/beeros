@@ -1,0 +1,6 @@
+{:name        "bounce"
+ :version     "0.1.0"
+ :description "A tiny canvas demo: sprites bounce; arrows move the paddle, click adds a ball, q quits"
+ :paths       ["src"]
+ :main        bounce.core
+ :terminal    false}

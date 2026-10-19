@@ -281,7 +281,7 @@
     (if (nil? text)
       (message ed "No sexp before point")
       (let [[v out] (eval-string text)]
-        (update-buf ed (fn [x] (b/insert (b/snapshot x) (str "\n" (s/replace out "\r" "") v "\n"))))))))
+        (update-buf ed (fn [x] (b/insert (b/snapshot x) (str "\n" (s/join "" (s/split out "\r")) v "\n"))))))))
 
 (defn eval-expression [ed]
   (let [[ed text] (read-minibuffer ed "Eval: " "")]
@@ -395,7 +395,7 @@
       (let [ed (redisplay! (assoc ed :size (beer.tty/size)))
             k  (read-key)
             cmd (lookup k)
-            ed (assoc ed :msg (if (:arg ed) "C-u-" "") :this nil)
+            ed (assoc ed :msg "" :this nil)
             ed (try
                  (cond (vector? cmd) (self-insert ed (second cmd))
                        cmd (cmd ed)

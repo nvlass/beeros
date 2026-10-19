@@ -62,6 +62,10 @@ void mem_trap_handler(void) {
         /* An exception: returning would re-run the faulting instruction */
         uart_puts("\r\n[beeros] fatal trap: mcause=0x"); put_hex(mcause);
         uart_puts(" mepc=0x"); put_hex(g_trap_frame[31]);
+        uint64_t mtval;
+        __asm__ volatile("csrr %0, mtval" : "=r"(mtval));
+        uart_puts(" mtval=0x"); put_hex(mtval);
+        uart_puts(" ra=0x"); put_hex(g_trap_frame[0]);
         uart_puts("\r\n");
         for (;;) __asm__ volatile("wfi");
     }

@@ -10,8 +10,8 @@ Done (2026-10-19): `beer.help` (`describe`, `apropos`, `namespaces`,
 beerlang libs; beeros's own `beer.mem`/`beer.gfx`/`beer.tty`/
 `beer.blk.native` through `docs_register` tables). Next:
 
-- beermacs `C-h f` / `C-h a` / `C-h k` into a `*Help*` buffer, and F1 on
-  the name at point.
+- beermacs `C-h f` / `C-h a` / `C-h k`: done (2026-10-20; F1 itself stays
+  the WM's help window).
 - Docstrings for the `lib/*.beer` and `/lib/beer/*.beer` fns that lack one.
 
 ### Live patching: a reload helper
@@ -73,6 +73,9 @@ same text model (`beermacs.buffer`). Wants a PSF font in `/share/fonts`
   (`/run/clipboard`) through a beer.fs mount.
 - Real sockets come with networking (virtio-net + a TCP/IP stack,
   docs/network.md); then hive's distribution works between machines.
+- Once networking is up: a small network game on `beer.hive` (two
+  beeros machines, or QEMU instances, playing `bounce`-style over remote
+  actors) — a demo of distribution and a good test of hive on beeros.
 
 ## beermacs
 

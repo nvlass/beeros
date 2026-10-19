@@ -30,6 +30,7 @@ reboot).
 | C-u | universal argument for the next command |
 | C-x C-f, C-x C-s, C-x C-w | find file, save, write to another file |
 | C-x b, C-x k, C-x C-b | switch to / kill / list buffers |
+| C-h f, C-h a, C-h k | describe a name (default: the one at point), apropos, describe a key — into `*Help*` (RET on a name follows it, q goes back); same data as F1 / `beer.help` |
 | C-l, C-g, C-x C-c | recenter, quit the current command, exit |
 
 ESC works as Meta (ESC f = M-f), for when Alt doesn't reach the guest.

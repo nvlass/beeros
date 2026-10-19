@@ -12,6 +12,7 @@
 
 (ns beermacs.core
   (:require [beer.string :as s]
+            [beer.help]
             [beermacs.buffer :as b]))
 
 (def esc (str (char 27)))
@@ -158,70 +159,108 @@
 
 (defn self-insert [ed k] (assoc ((edit (fn [x] (b/insert x k))) ed) :this :self-insert))
 
-(def forward-char (motion b/forward-char))
-(def backward-char (motion b/backward-char))
-(def next-line (motion b/next-line))
-(def previous-line (motion b/previous-line))
-(def beginning-of-line (motion b/beginning-of-line))
-(def end-of-line (motion b/end-of-line))
-(def forward-word (motion b/forward-word))
-(def backward-word (motion b/backward-word))
-(def beginning-of-buffer (motion (fn [x] (b/beginning-of-buffer (assoc x :mark (b/point x))))))
-(def end-of-buffer (motion (fn [x] (b/end-of-buffer (assoc x :mark (b/point x))))))
+(def forward-char "Move point forward one character."
+  (motion b/forward-char))
+(def backward-char "Move point back one character."
+  (motion b/backward-char))
+(def next-line "Move point to the next line, keeping the column."
+  (motion b/next-line))
+(def previous-line "Move point to the previous line, keeping the column."
+  (motion b/previous-line))
+(def beginning-of-line "Move point to the start of the line."
+  (motion b/beginning-of-line))
+(def end-of-line "Move point to the end of the line."
+  (motion b/end-of-line))
+(def forward-word "Move point past the next word."
+  (motion b/forward-word))
+(def backward-word "Move point back to the start of a word."
+  (motion b/backward-word))
+(def beginning-of-buffer "Move to the start of the buffer (mark where you were)."
+  (motion (fn [x] (b/beginning-of-buffer (assoc x :mark (b/point x))))))
+(def end-of-buffer "Move to the end of the buffer (mark where you were)."
+  (motion (fn [x] (b/end-of-buffer (assoc x :mark (b/point x))))))
 
-(defn scroll-up [ed] (update-buf ed (fn [x] (b/vertical x (max 1 (- (text-rows ed) 2))))))
-(defn scroll-down [ed] (update-buf ed (fn [x] (b/vertical x (- (max 1 (- (text-rows ed) 2)))))))
+(defn scroll-up
+  "Scroll forward a screen."
+  [ed] (update-buf ed (fn [x] (b/vertical x (max 1 (- (text-rows ed) 2))))))
+(defn scroll-down
+  "Scroll back a screen."
+  [ed] (update-buf ed (fn [x] (b/vertical x (- (max 1 (- (text-rows ed) 2)))))))
 
-(defn recenter [ed]
+(defn recenter
+  "Redraw with point in the middle of the screen."
+  [ed]
   (assoc (update-buf ed (fn [x] (assoc x :top (max 0 (- (:row x) (quot (text-rows ed) 2))))))
          :screen []))
 
-(def delete-char (edit b/delete-char))
-(def delete-backward-char (edit b/delete-backward-char))
-(def newline (edit b/newline-and-indent))
-(def open-line (edit (fn [x] (b/goto (b/insert x "\n") (:row x) (:col x)))))
-(def indent (edit (fn [x] (b/insert x "  "))))
+(def delete-char "Delete the character after point."
+  (edit b/delete-char))
+(def delete-backward-char "Delete the character before point."
+  (edit b/delete-backward-char))
+(def newline "Insert a newline and indent like the line before."
+  (edit b/newline-and-indent))
+(def open-line "Insert a newline after point, leaving point where it is."
+  (edit (fn [x] (b/goto (b/insert x "\n") (:row x) (:col x)))))
+(def indent "Insert two spaces."
+  (edit (fn [x] (b/insert x "  "))))
 
-(defn kill-line [ed]
+(defn kill-line
+  "Kill to the end of the line, or the newline at its end; repeated kills append."
+  [ed]
   (let [[killed nb] (b/kill-line-text (b/snapshot (buf ed)))]
     (assoc (update-buf ed (fn [_] nb))
            :kill (if (= (:last ed) :kill) (str (:kill ed) killed) killed)
            :this :kill)))
 
-(defn kill-word [ed]
+(defn kill-word
+  "Kill the next word."
+  [ed]
   (let [x (buf ed) to (b/point (b/forward-word x))]
     (assoc (update-buf ed (fn [_] (b/delete-between (b/snapshot x) (b/point x) to)))
            :kill (b/text-between x (b/point x) to))))
 
-(defn backward-kill-word [ed]
+(defn backward-kill-word
+  "Kill the word before point."
+  [ed]
   (let [x (buf ed) from (b/point (b/backward-word x))]
     (assoc (update-buf ed (fn [_] (b/delete-between (b/snapshot x) from (b/point x))))
            :kill (b/text-between x from (b/point x)))))
 
-(defn set-mark [ed] (message (update-buf ed (fn [x] (assoc x :mark (b/point x)))) "Mark set"))
+(defn set-mark
+  "Set the mark at point."
+  [ed] (message (update-buf ed (fn [x] (assoc x :mark (b/point x)))) "Mark set"))
 
 (defn with-region [ed f]
   (let [x (buf ed)]
     (if (:mark x) (f x (:mark x) (b/point x)) (message ed "The mark is not set now"))))
 
-(defn kill-region [ed]
+(defn kill-region
+  "Kill the text between mark and point."
+  [ed]
   (with-region ed (fn [x m p] (assoc (update-buf ed (fn [_] (assoc (b/delete-between (b/snapshot x) m p) :mark nil)))
                                      :kill (b/text-between x m p)))))
 
-(defn copy-region [ed]
+(defn copy-region
+  "Copy the text between mark and point to the kill ring."
+  [ed]
   (with-region ed (fn [x m p] (message (assoc ed :kill (b/text-between x m p)) "Copied"))))
 
-(defn yank [ed]
+(defn yank
+  "Insert the last killed text at point."
+  [ed]
   (update-buf ed (fn [x] (b/insert (assoc (b/snapshot x) :mark (b/point x)) (:kill ed)))))
 
-(def undo (motion (fn [x] (b/undo x))))
+(def undo "Undo the last change (a run of typing undoes together)."
+  (motion (fn [x] (b/undo x))))
 
 (defn universal-argument
   "C-u: the next command gets an argument (:arg in the editor state)."
   [ed]
   (message (assoc ed :arg 4 :this :arg) "C-u-"))
 
-(defn keyboard-quit [ed] (message (update-buf ed (fn [x] (assoc x :mark nil))) "Quit"))
+(defn keyboard-quit
+  "Cancel: clear the mark and the current command."
+  [ed] (message (update-buf ed (fn [x] (assoc x :mark nil))) "Quit"))
 
 ;; ── search ────────────────────────────────────────────────────────────────
 
@@ -275,14 +314,18 @@
           (update-buf ed (fn [x] (b/insert (b/snapshot x) (str " " v))))
           (message ed (str (if first-out (str (s/trim first-out) "  ") "") "=> " v)))))))
 
-(defn eval-print-last-sexp [ed]
+(defn eval-print-last-sexp
+  "Evaluate the form before point and insert its value on a new line (C-j)."
+  [ed]
   (let [text (last-sexp ed)]
     (if (nil? text)
       (message ed "No sexp before point")
       (let [[v out] (eval-string text)]
         (update-buf ed (fn [x] (b/insert (b/snapshot x) (str "\n" (s/join "" (s/split out "\r")) v "\n"))))))))
 
-(defn eval-expression [ed]
+(defn eval-expression
+  "Read an expression in the minibuffer and evaluate it (M-:)."
+  [ed]
   (let [[ed text] (read-minibuffer ed "Eval: " "")]
     (if (or (nil? text) (= text ""))
       ed
@@ -306,7 +349,9 @@
 
 (defn default-dir [ed] (let [f (:file (buf ed))] (if f (dirname f) "/tmp/")))
 
-(defn find-file [ed]
+(defn find-file
+  "Open a file in a buffer (C-x C-f)."
+  [ed]
   (let [[ed path] (read-minibuffer ed "Find file: " (default-dir ed))]
     (if (or (nil? path) (= path "")) ed (find-file-noselect ed path))))
 
@@ -316,13 +361,17 @@
     (message (update-buf ed (fn [x] (assoc x :file path :modified? false))) (str "Wrote " path))
     (catch e (message ed (str "Cannot save: " (if (map? e) (:message e) (pr-str e)))))))
 
-(defn save-buffer [ed]
+(defn save-buffer
+  "Save the buffer to its file (C-x C-s)."
+  [ed]
   (let [x (buf ed)]
     (cond (:file x) (if (:modified? x) (write-to ed (:file x)) (message ed "(No changes need to be saved)"))
           :else (let [[ed path] (read-minibuffer ed "File to save in: " (default-dir ed))]
                   (if (or (nil? path) (= path "")) ed (write-to ed path))))))
 
-(defn write-file [ed]
+(defn write-file
+  "Save the buffer to another file (C-x C-w)."
+  [ed]
   (let [[ed path] (read-minibuffer ed "Write file: " (default-dir ed))]
     (if (or (nil? path) (= path "")) ed
         (write-to (update-buf ed (fn [x] (assoc x :name (basename path)))) path))))
@@ -330,7 +379,9 @@
 (defn other-buffer [ed]
   (or (first (filter (fn [n] (not= n (:current ed))) (sort (keys (:buffers ed))))) "*scratch*"))
 
-(defn switch-to-buffer [ed]
+(defn switch-to-buffer
+  "Switch to another buffer, making it if needed (C-x b)."
+  [ed]
   (let [dflt (other-buffer ed)
         [ed nm] (read-minibuffer ed (str "Switch to buffer (default " dflt "): ") "")]
     (cond (nil? nm) ed
@@ -338,29 +389,107 @@
           (get (:buffers ed) nm) (assoc ed :current nm)
           :else (add-buffer ed (b/new-buffer nm "" nil)))))
 
-(defn kill-buffer [ed]
+(defn kill-buffer
+  "Close the current buffer (C-x k)."
+  [ed]
   (let [nm (:current ed)
         ed (assoc ed :buffers (dissoc (:buffers ed) nm))]
     (if (empty? (:buffers ed))
       (add-buffer ed (b/new-buffer "*scratch*" "" nil))
       (assoc ed :current (first (sort (keys (:buffers ed))))))))
 
-(defn list-buffers [ed]
+(defn list-buffers
+  "List the buffers in the echo area (C-x C-b)."
+  [ed]
   (message ed (s/join "  " (map (fn [n] (str n (if (:modified? (get (:buffers ed) n)) "*" "")))
                                 (sort (keys (:buffers ed)))))))
 
-(defn quit [ed]
+(defn quit
+  "Leave beermacs (C-x C-c), asking first if files are unsaved."
+  [ed]
   (let [modified (filter (fn [x] (and (:file x) (:modified? x))) (vals (:buffers ed)))]
     (if (empty? modified)
       (assoc ed :quit? true)
       (let [[ed yes?] (y-or-n? ed "Modified buffers exist; exit anyway?")]
         (if yes? (assoc ed :quit? true) ed)))))
 
+;; ── help (beer.help) ──────────────────────────────────────────────────────
+
+(defn symbol-at-point
+  "The symbol-ish word around point, or nil."
+  [ed]
+  (let [x (buf ed) l (b/cur-line x) n (count l)
+        ch (fn [i] (subs l i (inc i)))
+        start (loop [i (:col x)] (if (and (> i 0) (b/word-char? (ch (dec i)))) (recur (dec i)) i))
+        end (loop [i (:col x)] (if (and (< i n) (b/word-char? (ch i))) (recur (inc i)) i))]
+    (when (< start end) (subs l start end))))
+
+(defn show-help
+  "Put text in the *Help* buffer and switch to it (q goes back)."
+  [ed text]
+  (let [prev (:current ed)
+        ed (assoc ed :buffers (dissoc (:buffers ed) "*Help*"))
+        ed (add-buffer ed (assoc (b/new-buffer "*Help*" text nil) :keymap help-mode-map))]
+    (update-buf ed (fn [x] (assoc x :prev (if (= prev "*Help*") (:prev (get (:buffers ed) prev)) prev))))))
+
+(defn describe-name [ed nm]
+  (let [text (with-out-str (beer.help/describe (symbol nm)))]
+    (show-help ed (str text "\n(RET on a name describes it, q goes back)\n"))))
+
+(defn describe-function
+  "C-h f: describe a name (default: the one at point)."
+  [ed]
+  (let [dflt (symbol-at-point ed)
+        [ed nm] (read-minibuffer ed (str "Describe" (if dflt (str " (default " dflt ")") "") ": ") "")]
+    (cond (nil? nm) ed
+          (and (= nm "") (nil? dflt)) ed
+          :else (describe-name ed (if (= nm "") dflt nm)))))
+
+(defn apropos-command
+  "C-h a: names and docstrings matching a string."
+  [ed]
+  (let [[ed pat] (read-minibuffer ed "Apropos: " "")]
+    (if (or (nil? pat) (= pat ""))
+      ed
+      (show-help ed (apply str (map (fn [[full d]] (str full (if d (str "  - " d) "") "\n"))
+                                    (beer.help/apropos pat)))))))
+
+(defn describe-key
+  "C-h k: what a key runs, and its documentation."
+  [ed]
+  (let [ed (redisplay! (assoc ed :prompt "Describe key: "))
+        k (read-key)
+        cmd (if (= k "C-x")
+              (let [k2 (read-key)] [(str "C-x " k2) (get @ctl-x-map k2)])
+              [k (get @global-map k)])
+        ed (assoc ed :prompt nil)]
+    (if (nil? (second cmd))
+      (message ed (str (first cmd) " is undefined"))
+      (let [nm (let [t (str (second cmd))] (if (s/starts-with? t "#'") (subs t 2) t))]
+        (describe-name ed nm)))))
+
+(defn help-quit
+  "Leave *Help*, back to the buffer you came from."
+  [ed]
+  (let [prev (:prev (buf ed))]
+    (assoc ed :current (if (and prev (get (:buffers ed) prev)) prev (other-buffer ed)))))
+
+(defn help-follow
+  "Describe the name at point."
+  [ed]
+  (let [nm (symbol-at-point ed)] (if nm (describe-name ed nm) ed)))
+
 ;; ── keymaps ───────────────────────────────────────────────────────────────
 
 (def ctl-x-map
   (atom {"C-f" #'find-file "C-s" #'save-buffer "C-w" #'write-file "b" #'switch-to-buffer
          "k" #'kill-buffer "C-b" #'list-buffers "C-c" #'quit "C-e" #'eval-last-sexp "u" #'undo}))
+
+(def help-map
+  (atom {"f" #'describe-function "a" #'apropos-command "k" #'describe-key}))
+
+;; Keys a buffer handles itself (its :keymap), before the global ones
+(def help-mode-map (atom {"q" #'help-quit "RET" #'help-follow}))
 
 (def global-map
   (atom {"C-f" #'forward-char "<right>" #'forward-char "C-b" #'backward-char "<left>" #'backward-char
@@ -376,11 +505,13 @@
          "C-u" #'universal-argument}))
 
 (defn lookup
-  "The command for key k (reading more keys after C-x or ESC), or a
-  [:self-insert char], or nil."
-  [k]
+  "The command for key k (reading more keys after C-x, C-h or ESC), or a
+  [:self-insert char], or nil. The buffer's own :keymap comes first."
+  [ed k]
   (cond
+    (get (deref (or (:keymap (buf ed)) (atom {}))) k) (get @(:keymap (buf ed)) k)
     (= k "C-x") (let [k2 (read-key)] (get @ctl-x-map k2))
+    (= k "C-h") (let [k2 (read-key)] (get @help-map k2))
     (= k "ESC") (get @global-map (str "M-" (read-key)))
     (get @global-map k) (get @global-map k)
     (= (count k) 1) [:self-insert k]
@@ -393,7 +524,7 @@
       ed
       (let [ed (redisplay! (assoc ed :size (beer.tty/size)))
             k  (read-key)
-            cmd (lookup k)
+            cmd (lookup ed k)
             ed (assoc ed :msg "" :this nil)
             ed (try
                  (cond (vector? cmd) (self-insert ed (second cmd))

@@ -44,9 +44,10 @@ still interrupts it, and the terminal is restored on the way out.
   so it can be tried at a REPL; undo is just keeping old values.
 - `beermacs.core` — the display (only rows that changed are rewritten),
   the minibuffer, isearch, files, evaluation (output captured with a
-  `beer.tty/capture-stream`), and the keymaps: atoms holding maps from key
-  names to commands, `(fn [ed] ...)` from editor state to editor state.
-  Rebind from a REPL: `(swap! beermacs.core/global-map assoc "C-z" beermacs.core/undo)`.
+  `with-out-str`), and the keymaps: atoms holding maps from key names to
+  commands — vars (`#'forward-char`) of fns from editor state to editor
+  state, so redefining a command with `defn` takes effect at once. Rebind
+  from a REPL: `(swap! beermacs.core/global-map assoc "C-z" #'beermacs.core/undo)`.
   `@beermacs.core/last-state` holds the state at exit.
 
 Not yet: windows (C-x 2), M-x, reverse search, syntax colours, lisp

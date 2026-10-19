@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "docs.h"
 #include "namespace.h"
 #include "native.h"
 #include "bstring.h"
@@ -265,7 +266,29 @@ static Value native_mem_irq_wait(VM* vm, int argc, Value* argv) {
 
 /* ── namespace registration ─────────────────────────────────────────────── */
 
+
+/* Docs for (doc ...), meta and beer.help */
+static const NativeDoc beer_mem_docs[] = {
+    { "read8", "([addr])", "Volatile 8-bit read of MMIO/memory at addr." },
+    { "read16", "([addr])", "Volatile 16-bit read at addr." },
+    { "read32", "([addr])", "Volatile 32-bit read at addr." },
+    { "read64", "([addr])", "Volatile 64-bit read at addr." },
+    { "write8!", "([addr v])", "Volatile 8-bit write of v at addr." },
+    { "write16!", "([addr v])", "Volatile 16-bit write of v at addr." },
+    { "write32!", "([addr v])", "Volatile 32-bit write of v at addr." },
+    { "write64!", "([addr v])", "Volatile 64-bit write of v at addr." },
+    { "fence", "([])", "Memory barrier (RISC-V fence rw,rw): order MMIO and DMA accesses." },
+    { "fence-i", "([])", "Instruction-cache barrier (fence.i), after writing code to memory." },
+    { "addr-of", "([x])", "Physical address of a ByteBuffer's (or string's) data, for DMA; 0 for other values." },
+    { "irq-register!", "([n f])", "Store fn f as the handler for PLIC interrupt n (called by irq-listen!)." },
+    { "irq-handler", "([n])", "The handler stored for interrupt n, or nil." },
+    { "irq-enable!", "([n prio])", "Enable PLIC interrupt n at priority prio." },
+    { "irq-pending?", "([n])", "Has interrupt n fired since it was last waited for? Never blocks." },
+    { "irq-wait!", "([n])", "Wait (yielding to other tasks) until interrupt n fires, then clear it." },
+};
+
 void mem_register_natives(void) {
+    docs_register("beer.mem", beer_mem_docs, sizeof beer_mem_docs / sizeof beer_mem_docs[0]);
     /* Initialise handler table to nil */
     for (int i = 0; i < MAX_IRQS; i++) irq_handlers[i] = VALUE_NIL;
     irq_pending = 0;

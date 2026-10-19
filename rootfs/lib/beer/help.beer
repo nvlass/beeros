@@ -20,20 +20,15 @@
 
 (def none :beer.help/none)   ; "no value" (a macro, or eval failed)
 
-;; Namespaces made by C (natives) aren't in *loaded-libs*
-(def native-namespaces '[beer.core beer.mem beer.gfx beer.tty beer.bytes beer.blk.native])
-
 (defn publics* [ns-sym]
   (try (filter (fn [n] (not (s/starts-with? n "__")))
                (map str (ns-publics ns-sym)))
        (catch e [])))
 
 (defn namespaces
-  "Sorted names of the namespaces that exist now."
+  "Sorted names of the namespaces that exist now (with public names)."
   []
-  (sort (distinct (filter (fn [n] (not (empty? (publics* (symbol n)))))
-                          (concat (map str native-namespaces)
-                                  (map name (keys *loaded-libs*)))))))
+  (sort (filter (fn [n] (not (empty? (publics* (symbol n))))) (map str (all-ns)))))
 
 (defn publics "Sorted public names of namespace ns (a string or symbol)." [ns]
   (sort (publics* (symbol (str ns)))))
@@ -49,12 +44,11 @@
 (defn lookup*
   "{:ns :name :doc :kind :value} for name in ns, or nil."
   [ns nm]
-  (let [sym (symbol nm)
-        nsym (symbol ns)]
-    (when (some (fn [p] (= p nm)) (publics* nsym))
-      (let [m (try (binding [*ns* nsym] (meta sym)) (catch e nil))
-            v (try (binding [*ns* nsym] (eval sym)) (catch e none))]
-        {:ns ns :name nm :doc (:doc m)
+  (let [q (symbol (str ns "/" nm))]
+    (when (some (fn [p] (= p nm)) (publics* (symbol ns)))
+      (let [m (try (meta q) (catch e nil))
+            v (try (eval q) (catch e none))]
+        {:ns ns :name nm :doc (:doc m) :arglists (:arglists m)
          :kind (cond (= v none) "macro or special"
                      (fn? v) "function"
                      (map? v) "map" (vector? v) "vector" (string? v) "string"
@@ -100,6 +94,7 @@
     (if (nil? i)
       (println (str "No public name " x))
       (do (println (str (:ns i) "/" (:name i) "   (" (:kind i) ")"))
+          (doseq [a (:arglists i)] (println (str "  " (pr-str (cons (symbol (:name i)) a)))))
           (println (or (:doc i) "  (no docstring)"))
           (when (:value i) (println (str "value: " (let [v (pr-str (:value i))] (if (> (count v) 200) (str (subs v 0 200) " ...") v)))))))
     nil))
@@ -149,7 +144,9 @@
       (= k :name)
       (let [[_ ns nm] target i (lookup* ns nm)]
         {:title (str ns "/" nm)
-         :lines (vec (concat [[(str "(" (:kind i) ")") nil] ["" nil]]
+         :lines (vec (concat [[(str "(" (:kind i) ")") nil]]
+                             (map (fn [a] [(str "  " (pr-str (cons (symbol nm) a))) nil]) (:arglists i))
+                             [["" nil]]
                              (map (fn [l] [l nil]) (wrap (or (:doc i) "(no docstring)") w))
                              (when (:value i)
                                (concat [["" nil]]

@@ -4,8 +4,9 @@
 ;; terminal or serial):  (beer.pkg/run "beermacs" "/tmp/notes.txt")
 ;;
 ;; Keymaps are plain maps from key names ("C-f", "M-x", "RET", "a") to
-;; command fns of the editor state, so you can rebind from a REPL:
-;;   (swap! beermacs.core/global-map assoc "C-z" beermacs.core/undo)
+;; commands (vars of fns of the editor state: redefining a command with
+;; defn takes effect at once), so you can rebind from a REPL:
+;;   (swap! beermacs.core/global-map assoc "C-z" #'beermacs.core/undo)
 ;;
 ;; Files save to the disk (ext2) or /tmp (RAM, gone at reboot).
 
@@ -250,13 +251,12 @@
 (defn eval-string
   "[value-string output] of reading and evaluating s."
   [text]
-  (let [[out slot] (beer.tty/capture-stream)]
-    (try
-      (let [v (binding [*out* out *err* out]
-                (try (pr-str (eval (read-string text)))
-                     (catch e (str "Error: " (if (map? e) (or (:message e) (pr-str e)) (pr-str e))))))]
-        [v (or (beer.tty/take-output slot) "")])
-      (finally (beer.tty/release-output! slot)))))
+  (let [v (atom nil)
+        out (with-out-str
+              (binding [*err* *out*]
+                (reset! v (try (pr-str (eval (read-string text)))
+                               (catch e (str "Error: " (if (map? e) (or (:message e) (pr-str e)) (pr-str e))))))))]
+    [@v out]))
 
 (defn last-sexp [ed]
   (let [x (buf ed) p (b/sexp-before x)]
@@ -359,21 +359,21 @@
 ;; ── keymaps ───────────────────────────────────────────────────────────────
 
 (def ctl-x-map
-  (atom {"C-f" find-file "C-s" save-buffer "C-w" write-file "b" switch-to-buffer
-         "k" kill-buffer "C-b" list-buffers "C-c" quit "C-e" eval-last-sexp "u" undo}))
+  (atom {"C-f" #'find-file "C-s" #'save-buffer "C-w" #'write-file "b" #'switch-to-buffer
+         "k" #'kill-buffer "C-b" #'list-buffers "C-c" #'quit "C-e" #'eval-last-sexp "u" #'undo}))
 
 (def global-map
-  (atom {"C-f" forward-char "<right>" forward-char "C-b" backward-char "<left>" backward-char
-         "C-n" next-line "<down>" next-line "C-p" previous-line "<up>" previous-line
-         "C-a" beginning-of-line "<home>" beginning-of-line "C-e" end-of-line "<end>" end-of-line
-         "M-f" forward-word "M-b" backward-word "M-<" beginning-of-buffer "M->" end-of-buffer
-         "C-v" scroll-up "<next>" scroll-up "M-v" scroll-down "<prior>" scroll-down
-         "C-l" recenter "C-d" delete-char "<delete>" delete-char "DEL" delete-backward-char
-         "RET" newline "C-o" open-line "TAB" indent "C-k" kill-line "M-d" kill-word
-         "M-DEL" backward-kill-word "C-SPC" set-mark "C-@" set-mark "C-w" kill-region
-         "M-w" copy-region "C-y" yank "C-/" undo "C-_" undo "C--" undo "C-g" keyboard-quit
-         "C-s" isearch-forward "C-j" eval-print-last-sexp "M-:" eval-expression
-         "C-u" universal-argument}))
+  (atom {"C-f" #'forward-char "<right>" #'forward-char "C-b" #'backward-char "<left>" #'backward-char
+         "C-n" #'next-line "<down>" #'next-line "C-p" #'previous-line "<up>" #'previous-line
+         "C-a" #'beginning-of-line "<home>" #'beginning-of-line "C-e" #'end-of-line "<end>" #'end-of-line
+         "M-f" #'forward-word "M-b" #'backward-word "M-<" #'beginning-of-buffer "M->" #'end-of-buffer
+         "C-v" #'scroll-up "<next>" #'scroll-up "M-v" #'scroll-down "<prior>" #'scroll-down
+         "C-l" #'recenter "C-d" #'delete-char "<delete>" #'delete-char "DEL" #'delete-backward-char
+         "RET" #'newline "C-o" #'open-line "TAB" #'indent "C-k" #'kill-line "M-d" #'kill-word
+         "M-DEL" #'backward-kill-word "C-SPC" #'set-mark "C-@" #'set-mark "C-w" #'kill-region
+         "M-w" #'copy-region "C-y" #'yank "C-/" #'undo "C-_" #'undo "C--" #'undo "C-g" #'keyboard-quit
+         "C-s" #'isearch-forward "C-j" #'eval-print-last-sexp "M-:" #'eval-expression
+         "C-u" #'universal-argument}))
 
 (defn lookup
   "The command for key k (reading more keys after C-x or ESC), or a

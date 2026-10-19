@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "docs.h"
 #include "namespace.h"
 #include "native.h"
 #include "symbol.h"
@@ -276,7 +277,33 @@ static Value native_gfx_blit_surface(VM* vm, int argc, Value* argv) {
 
 /* ── namespace registration ─────────────────────────────────────────────── */
 
+
+/* Docs for (doc ...), meta and beer.help */
+static const NativeDoc beer_gfx_docs[] = {
+    { "set-pixel!", "([x y color])", "Set one screen pixel (color 0xRRGGBB)." },
+    { "fill-rect!", "([x y w h color])", "Fill a screen rectangle." },
+    { "width", "([])", "Screen width in pixels." },
+    { "height", "([])", "Screen height in pixels." },
+    { "rgb", "([r g b])", "Color 0xRRGGBB from 0-255 components." },
+    { "clear!", "([color])", "Fill the whole screen." },
+    { "blit-bits!", "([x y buf off w h stride scale fg bg])", "Draw a 1-bit bitmap (font glyph) from a ByteBuffer on the screen, each bit scale x scale; bg nil is transparent." },
+    { "copy-rect!", "([sx sy w h dx dy])", "Copy a screen rectangle (overlap is fine): scrolling." },
+    { "surface", "([w h])", "A new off-screen surface (black), its id; nil if none is free." },
+    { "surface-free!", "([id])", "Free a surface; its screen pixels go back to the desktop." },
+    { "fill-rect-on!", "([s x y w h color])", "fill-rect! on surface s (0 = the screen)." },
+    { "blit-bits-on!", "([s x y buf off w h stride scale fg bg])", "blit-bits! on surface s." },
+    { "copy-rect-on!", "([s sx sy w h dx dy])", "copy-rect! within surface s." },
+    { "own!", "([id x y w h])", "Screen pixels in the rectangle show surface id (0: the desktop). The WM's owner map." },
+    { "owner-at", "([x y])", "The surface id shown at a screen pixel." },
+    { "present!", "([id sx sy w h dx dy])", "Copy surface id's rectangle to the screen at (dx,dy), only where the owner map says id." },
+    { "fill-owned!", "([id x y w h color])", "Fill the screen pixels in the rectangle owned by id." },
+    { "cursor!", "([x y show?])", "Move (and show or hide) the software mouse pointer." },
+    { "blit-pixels!", "([s x y buf off w h stride key])", "Draw XRGB8888 pixels (u32 little-endian 0x00RRGGBB) from a ByteBuffer on surface s; pixels equal to key are skipped (key nil: none)." },
+    { "blit-surface!", "([src sx sy w h dst dx dy scale])", "Copy a rectangle of surface src to surface dst, each pixel scale x scale." },
+};
+
 void gfx_register_natives(void) {
+    docs_register("beer.gfx", beer_gfx_docs, sizeof beer_gfx_docs / sizeof beer_gfx_docs[0]);
     Namespace* ns = namespace_registry_get_or_create(
         global_namespace_registry, "beer.gfx");
     reg(ns, "set-pixel!",  native_gfx_set_pixel);

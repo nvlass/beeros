@@ -284,7 +284,9 @@ docs/console.md "Window manager".
 `namespaces`, `browse` (a tty app: namespaces → names → docstrings and
 values, `docs/*.md` copied to `/share/doc` with `ns/name` links). F1 or
 Ctrl-Alt-H in the WM opens it in a window (`beer.wm/open! {:run f}`).
-Docstrings are what there is to browse: give new public fns one.
+Docstrings are what there is to browse: give new public fns one, and
+new C natives a row in their file's `NativeDoc` table (`docs_register`,
+beerlang's `include/docs.h`: name, arglists, doc).
 
 **Canvases.** `beer.wm/canvas!` is a window you draw in (games): its own
 surface, `show!` scales it to the screen, an `:events` channel with keys,

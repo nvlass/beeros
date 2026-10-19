@@ -5,15 +5,14 @@
 ### Browsable documentation: next steps
 
 Done (2026-10-19): `beer.help` (`describe`, `apropos`, `namespaces`,
-`browse`), F1 / Ctrl-Alt-H in the WM, docs pages in `/share/doc`. Next:
+`browse`), F1 / Ctrl-Alt-H in the WM, docs pages in `/share/doc`;
+`:arglists` and docs on natives (beerlang 4a58848: beer.core and the
+beerlang libs; beeros's own `beer.mem`/`beer.gfx`/`beer.tty`/
+`beer.blk.native` through `docs_register` tables). Next:
 
 - beermacs `C-h f` / `C-h a` / `C-h k` into a `*Help*` buffer, and F1 on
   the name at point.
-- Docstrings for the native namespaces (`beer.core`, `beer.gfx`, ...) and
-  the `lib/*.beer` fns that lack one; arglists (beerlang keeps only
-  `:doc` in meta; ask for `:arglists`).
-- `all-ns` and qualified `meta` from beerlang would replace the
-  `*loaded-libs*` + native-list guess and the `binding *ns*` trick.
+- Docstrings for the `lib/*.beer` and `/lib/beer/*.beer` fns that lack one.
 
 ### Live patching: a reload helper
 
@@ -27,12 +26,9 @@ WM's input loop, a term's renderer, tasks already running a loop. Wanted:
   'beer.wm restart-fn)`): the WM restarts its input task, beermacs
   re-reads its keymaps, terms restart renderers.
 - Calls by name inside a fn body already see redefinitions (as in
-  Clojure); only stored fn values don't. Keymaps and similar tables
-  should hold names (symbols looked up at call time, or `(fn [ed]
-  (forward-char ed))` wrappers) instead of fn values, so a redefinition
-  is picked up without a restart. beerlang has no `var` / `#'` yet, so
-  Clojure's `#'handler` idiom isn't available (requested: beerlang
-  TODO "beeros requests" 13).
+  Clojure); only stored fn values don't. Store vars instead (`#'f`;
+  beerlang 4a58848 has callable vars): beermacs's keymaps do. Still to
+  look at: the WM's handlers, term tty maps, `spawn` of long loops.
 - Embedded namespaces (`lib/*.beer` in the kernel image): a disk copy in
   `/lib/beer/` that `/etc/init.beer` loads over the embedded one, so a
   patch to a driver persists; `reload` finds it there.

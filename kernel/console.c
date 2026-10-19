@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "docs.h"
 #include "console.h"
 #include "bstring.h"
 #include "stream.h"
@@ -215,7 +216,19 @@ static void reg(Namespace* ns, const char* name, NativeFn fn) {
     object_release(f);
 }
 
+
+/* Docs for (doc ...), meta and beer.help */
+static const NativeDoc beer_tty_docs[] = {
+    { "uart-byte", "([])", "The next byte received on the serial port, or nil (interrupt-driven ring)." },
+    { "ctrl-c-interrupts!", "([on?])", "Whether Ctrl-C on the serial port interrupts the running form (off: it is a key)." },
+    { "ctrl-c-interrupts?", "([])", "Does Ctrl-C interrupt right now?" },
+    { "capture-stream", "([])", "[stream slot]: an output stream whose bytes are kept for take-output (bind *out* to it)." },
+    { "take-output", "([slot])", "What was written to the capture stream since last time, or nil." },
+    { "release-output!", "([slot])", "Free a capture slot." },
+};
+
 void console_register_natives(void) {
+    docs_register("beer.tty", beer_tty_docs, sizeof beer_tty_docs / sizeof beer_tty_docs[0]);
     Namespace* ns = namespace_registry_get_or_create(global_namespace_registry, "beer.tty");
     reg(ns, "uart-byte",          native_uart_byte);
     reg(ns, "ctrl-c-interrupts!", native_ctrl_c_set);

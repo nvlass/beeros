@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 
+#include "docs.h"
 #include "blk_natives.h"
 #include "blob_loader.h"
 #include "virtio_blk.h"
@@ -110,7 +111,21 @@ static Value native_flush(VM* vm, int argc, Value* argv) {
 
 /* Doesn't probe: the C driver only touches the hardware if lib/virtio_blk.beer
  * picks it at boot (or (beer.blk/use-native-driver!) is called later). */
+
+/* Docs for (doc ...), meta and beer.help */
+static const NativeDoc beer_blk_native_docs[] = {
+    { "probe!", "([])", "Probe the virtio-blk devices with the C driver; their count." },
+    { "count", "([])", "Number of devices the C driver found." },
+    { "sectors", "([id])", "Size of device id in sectors." },
+    { "read-only?", "([id])", "Is device id read-only?" },
+    { "can-flush?", "([id])", "Does device id support flush?" },
+    { "read!", "([id lba n buf off])", "Read n sectors from lba into ByteBuffer buf at off; nil or an error keyword." },
+    { "write!", "([id lba n buf off])", "Write n sectors at lba from buf at off; nil or an error keyword." },
+    { "flush!", "([id])", "Flush device id's write cache; nil or an error keyword." },
+};
+
 void blk_register_natives(void) {
+    docs_register("beer.blk.native", beer_blk_native_docs, sizeof beer_blk_native_docs / sizeof beer_blk_native_docs[0]);
     Namespace* ns = namespace_registry_get_or_create(global_namespace_registry,
                                                      "beer.blk.native");
     reg(ns, "probe!",     native_probe);

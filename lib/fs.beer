@@ -79,7 +79,7 @@
                                    (str (try (beer.ext2/slurp fs path) (catch e "")) s)
                                    s)))
 
-(def impls
+(def builtin-types
   {:ext2 {:ls         beer.ext2/ls
           :slurp      beer.ext2/slurp
           :read-bytes beer.ext2/read-bytes
@@ -104,6 +104,20 @@
           :rmdir!     ram-rmdir!
           :mv!        ram-mv!}})
 
+;; Filesystem types by :type; libraries add their own (beer.srv's /srv)
+(beer.reload/defonce types (atom {}))
+(swap! types merge builtin-types)
+
+(defn register-type!
+  "Add a file system type: k (a keyword, the :type of its file system
+  maps) to {:ls :slurp :read-bytes :stat :lstat :readlink, optionally
+  :write! :mkdir! :rm! :rmdir! :mv! :symlink!}, each (fn [fs path ...])."
+  [k ops]
+  (swap! types assoc k ops)
+  k)
+
+(defn impls [] @types)
+
 (beer.reload/defonce mount-table (atom {}))
 
 (defn normalize-mount-point [p]
@@ -112,7 +126,7 @@
     p))
 
 (defn mount! [point fs]
-  (when (nil? (get impls (:type fs)))
+  (when (nil? (get @types (:type fs)))
     (throw (ex-info (str "fs: no ops for filesystem type " (:type fs)) {:fs (:name fs)})))
   (swap! mount-table assoc (normalize-mount-point point) fs)
   point)
@@ -146,7 +160,7 @@
 
 (defn op [k path]
   (let [[fs rel] (locate path)]
-    ((get (get impls (:type fs)) k) fs rel)))
+    ((get (get @types (:type fs)) k) fs rel)))
 
 ;; ── paths inside tar files ────────────────────────────────────────────────
 ;; A tar file reads like a directory: /pkg/hello.tar/hello/core.beer is the
@@ -237,7 +251,7 @@
   "Run write operation k (:write! :mkdir! :rm! :rmdir!) on path."
   [k path & args]
   (let [[fs rel] (locate path)
-        f (get (get impls (:type fs)) k)]
+        f (get (get @types (:type fs)) k)]
     (when (nil? f)
       (throw (ex-info (str "fs: " path ": read-only file system (" (name (:type fs)) ")")
                       {:path path :reason :read-only})))

@@ -112,7 +112,7 @@ At boot the first block device holding ext2 is mounted at `/`.
 Paths are absolute; the longest matching mount point wins. A path that
 goes through a tar file reads from the archive (`/pkg/hello.tar/hello/core.beer`;
 see `docs/packages.md`). A filesystem
-type plugs in through `beer.fs/impls` (`{:ext2 {:ls ... :slurp ...}}`).
+type plugs in with `(beer.fs/register-type! :ext2 {:ls ... :slurp ...})` (see `beer.srv` for a small one).
 
 ### `require`, `load-file`, `slurp` from the filesystem
 
@@ -193,3 +193,18 @@ the image on the host with `e2fsck -fn build/disk.img` (or `-fy` to fix).
 
 Since the disk now holds your work, the run targets keep an existing
 `build/disk.img`; `make disk` rebuilds it (old one → `disk.img.bak`).
+
+## /srv: named channels as files
+
+`beer.srv` (`/lib/beer/srv.beer`, loaded by `/etc/init.beer`) keeps a
+registry of channels by name and mounts it at `/srv`, after Plan 9:
+
+```clojure
+(beer.srv/chan! "clipboard" 16)       ; make and post a channel
+(spit "/srv/clipboard" "hello")       ; send (>!)
+(slurp "/srv/clipboard")              ; take (<!), waiting for a value
+(beer.fs/ls "/srv")  (beer.fs/rm! "/srv/clipboard")
+```
+
+It is a file system type of its own (`beer.fs/register-type!`), about 30
+lines: the template for others.

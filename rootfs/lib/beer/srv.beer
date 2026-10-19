@@ -1,0 +1,77 @@
+;; beer.srv — named channels, and /srv to see them as files (after Plan 9)
+;;
+;; Everything shares one image, so tasks that want to talk only need to
+;; find each other's channel: post it under a name.
+;;
+;;   (beer.srv/chan! "clipboard" 16)        ; make and post a channel
+;;   (beer.srv/lookup "clipboard")           ; => the channel
+;;   (>! (beer.srv/lookup "clipboard") "hi")
+;;
+;; /srv shows them as files: writing one sends a value, reading one takes
+;; a value (waiting for it), ls lists them, rm removes one.
+;;
+;;   (spit "/srv/clipboard" "hello")         ; in one REPL
+;;   (slurp "/srv/clipboard")                ; in another: "hello"
+;;   (beer.fs/ls "/srv")                     ; ("clipboard")
+;;
+;; Actors have their own registry (beer.hive's register/whereis); post an
+;; actor's mailbox here to reach it from the file system.
+
+(ns beer.srv)
+
+(beer.reload/defonce registry (atom {}))      ; name -> channel
+
+(defn post!
+  "Make channel ch reachable as name (and /srv/name); returns ch."
+  [nm ch]
+  (swap! registry assoc (str nm) ch)
+  ch)
+
+(defn chan!
+  "A new channel (buffer n, default 16) posted as name."
+  ([nm] (chan! nm 16))
+  ([nm n] (post! nm (chan n))))
+
+(defn lookup "The channel posted as name, or nil." [nm] (get @registry (str nm)))
+(defn names "Names of the posted channels." [] (vec (sort (keys @registry))))
+(defn remove! "Forget name (the channel itself stays open)." [nm] (swap! registry dissoc (str nm)) nil)
+
+;; ── /srv ──────────────────────────────────────────────────────────────────
+
+(defn fail! [path reason]
+  (throw (ex-info (str "srv: " path ": " (name reason)) {:path path :reason reason})))
+
+(defn entry
+  "The channel for /name, or throw."
+  [path]
+  (let [nm (subs path 1)
+        ch (lookup nm)]
+    (when (or (= nm "") (nil? ch)) (fail! path :not-found))
+    ch))
+
+(defn srv-ls [fs path]
+  (if (= path "/") (names) (fail! path :not-a-directory)))
+
+(defn srv-stat [fs path]
+  (if (= path "/") {:type :dir :size 0} (do (entry path) {:type :channel :size 0})))
+
+(defn srv-slurp
+  "Take one value from the channel (waiting for one): strings as they are,
+  other values printed."
+  [fs path]
+  (let [v (<! (entry path))]
+    (if (string? v) v (pr-str v))))
+
+(beer.fs/register-type!
+ :srv
+ {:ls         srv-ls
+  :stat       srv-stat
+  :lstat      srv-stat
+  :slurp      srv-slurp
+  :read-bytes (fn [fs path] (beer.bytes/from-string (srv-slurp fs path)))
+  :readlink   (fn [fs path] (fail! path :not-a-link))
+  :write!     (fn [fs path s append?] (>! (entry path) s) nil)
+  :rm!        (fn [fs path] (entry path) (remove! (subs path 1)))})
+
+(when (not (beer.reload/reloading?))
+  (beer.fs/mount! "/srv" {:type :srv :name "srv"}))

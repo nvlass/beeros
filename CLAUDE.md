@@ -62,7 +62,7 @@ beeros/
 ├── rootfs/            ← root filesystem contents (etc/init.beer, etc/beeros.edn, lib/, bin/)
 │   └── lib/beer/      ← term.beer (beer.term: VT100 emulator + REPL), font.beer (PSF fonts),
 │                         wm.beer (beer.wm: window manager), help.beer (beer.help: docs browser),
-│                         image.beer (beer.image: BMP)
+│                         image.beer (beer.image: BMP), srv.beer (beer.srv: /srv named channels)
 ├── packages/<name>/   ← packages (beer.edn, src/, assets/) → /pkg/<name>.tar:
 │                         hello (sample), beermacs (editor, docs/beermacs.md), bounce (canvas demo)
 ├── scripts/qemu-drive.py ← scripted REPL + monitor/QMP input for QEMU tests
@@ -220,7 +220,9 @@ installs beerlang's file hook `beer.core/*fs*` and sets `*load-path*` to
 `["/lib/"]`, so beerlang's own `require`/`load-file`/`slurp` read from it
 (see `docs/filesystem.md`). `/` (ext2) and `/tmp` (a RAM file system, `:type :ram`) are writable:
 `beer.fs/spit!` (and beerlang's `spit`), `mkdir!`, `rm!`, `rmdir!`, `mv!`,
-`symlink!` (ext2).
+`symlink!` (ext2). `/srv` is `beer.srv` (`/lib/beer/srv.beer`): channels
+posted by name, write = send, read = take; file system types plug in
+with `beer.fs/register-type!`.
 Because of that, `make run-gfx`/`run-disk` never rebuild an existing
 `build/disk.img` (they note when `rootfs/` is newer); `make disk`
 rebuilds it and keeps the old one as `build/disk.img.bak`. `/etc/init.beer` runs last at boot

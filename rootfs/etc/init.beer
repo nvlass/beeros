@@ -8,6 +8,10 @@
 (when (:motd config)
   (println (:motd config)))
 
+;; Named channels, and /srv to see them as files
+(try (require 'beer.srv)
+     (catch e (println (str "[beeros] /srv: " (if (map? e) (:message e) (pr-str e))))))
+
 ;; Patched libraries: (beer.reload/ns! ...) each namespace listed under
 ;; :reload, so edits to /lib/beer/*.beer (also the built-in ones) persist.
 (doseq [n (get config :reload [])]

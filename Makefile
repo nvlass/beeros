@@ -140,7 +140,7 @@ DISK_SIZE  ?= 16M
 DISK_IMG    = build/disk.img
 ROOTFS_STAGE = build/rootfs
 ROOTFS_BEERLANG_LIBS = string json test digest crypto tar hive hive/node hive/wire
-ROOTFS_DIRS = bin etc lib/beer pkg share/fonts tmp var
+ROOTFS_DIRS = bin etc lib/beer pkg share/fonts srv tmp var
 
 # The image is writable (ext2 writes): running never rebuilds an existing
 # one, so what you saved on it stays. `make disk` rebuilds it from rootfs/

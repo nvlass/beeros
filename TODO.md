@@ -58,18 +58,18 @@ same text model (`beermacs.buffer`). Wants a PSF font in `/share/fonts`
 
 ### Actors and named channels
 
-- `beer.hive` works on beeros (beerlang ca2635b loads the node layer only
-  on first remote use; `/lib/beer/hive*.beer` are on the image): local
-  actors, `ask`, `register`/`whereis`, supervisors, monitors.
-- Named channels instead of Unix sockets: everything shares one image, so
-  a registry name -> channel is enough (hive's `register`/`whereis` is
-  that for actors). Maybe later a Plan 9-ish twist: channels under a path
-  (`/run/clipboard`) through a beer.fs mount.
+Done (2026-10-20): `beer.hive` works on beeros (local actors, ask,
+register/whereis); `beer.srv` posts channels under names and mounts
+`/srv` (write = send, read = take, ls, rm), after Plan 9; `beer.fs`
+file system types are pluggable (`register-type!`). Next:
+
 - Real sockets come with networking (virtio-net + a TCP/IP stack,
   docs/network.md); then hive's distribution works between machines.
 - Once networking is up: a small network game on `beer.hive` (two
   beeros machines, or QEMU instances, playing `bounce`-style over remote
   actors) — a demo of distribution and a good test of hive on beeros.
+- More Plan 9-ish files: `/srv` entries for actors (post a mailbox),
+  `/dev/cons`-style windows, `/proc`-like task listing.
 
 ## beermacs
 

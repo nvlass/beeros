@@ -15,6 +15,25 @@ Done (2026-10-19): `beer.help` (`describe`, `apropos`, `namespaces`,
 - `all-ns` and qualified `meta` from beerlang would replace the
   `*loaded-libs*` + native-list guess and the `binding *ns*` trick.
 
+### Live patching: a reload helper
+
+Redefining a var takes effect at the next call, but whatever captured
+the old fn value keeps it: beermacs keymaps (fn values, not names), the
+WM's input loop, a term's renderer, tasks already running a loop. Wanted:
+
+- `(beer.reload/ns! 'beer.wm)`: re-load a namespace from its file
+  (`/lib/...` or a package), then restart what registered as depending on
+  it. Long-running parts register a restart fn (`(beer.reload/on-reload!
+  'beer.wm restart-fn)`): the WM restarts its input task, beermacs
+  re-reads its keymaps, terms restart renderers.
+- Keymaps and similar tables hold var names (or `#'var`) instead of fn
+  values where it's cheap, so a redefinition is picked up without a
+  restart.
+- Embedded namespaces (`lib/*.beer` in the kernel image): a disk copy in
+  `/lib/beer/` that `/etc/init.beer` loads over the embedded one, so a
+  patch to a driver persists; `reload` finds it there.
+- beermacs: `C-c C-k` / `M-x reload` for the buffer's namespace.
+
 ### ext2: rename, and the rest of writes
 
 Writing files, mkdir, rm, rmdir work (2026-10-19). Still to do: `mv`

@@ -26,9 +26,13 @@ WM's input loop, a term's renderer, tasks already running a loop. Wanted:
   it. Long-running parts register a restart fn (`(beer.reload/on-reload!
   'beer.wm restart-fn)`): the WM restarts its input task, beermacs
   re-reads its keymaps, terms restart renderers.
-- Keymaps and similar tables hold var names (or `#'var`) instead of fn
-  values where it's cheap, so a redefinition is picked up without a
-  restart.
+- Calls by name inside a fn body already see redefinitions (as in
+  Clojure); only stored fn values don't. Keymaps and similar tables
+  should hold names (symbols looked up at call time, or `(fn [ed]
+  (forward-char ed))` wrappers) instead of fn values, so a redefinition
+  is picked up without a restart. beerlang has no `var` / `#'` yet, so
+  Clojure's `#'handler` idiom isn't available (requested: beerlang
+  TODO "beeros requests" 13).
 - Embedded namespaces (`lib/*.beer` in the kernel image): a disk copy in
   `/lib/beer/` that `/etc/init.beer` loads over the embedded one, so a
   patch to a driver persists; `reload` finds it there.

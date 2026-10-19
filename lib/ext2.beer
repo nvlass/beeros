@@ -531,14 +531,21 @@
         [blk]
         (into [blk] (mapcat (fn [k] (indirect-blocks fs (u32 buf (* 4 k)) (dec depth))) (range ppb)))))))
 
+(defn fast-symlink? [fs inode]
+  (and (= (:type inode) :symlink)
+       (= (:sectors inode) (if (= 0 (:file-acl inode)) 0 (quot (:block-size fs) 512)))))
+
 (defn all-blocks
-  "Every block an inode uses: data and indirect."
+  "Every block an inode uses: data and indirect (none for a fast symlink,
+  whose target lives in i_block)."
   [fs inode]
+  (if (fast-symlink? fs inode)
+    []
   (let [b (:block inode)]
     (concat (file-blocks fs inode)
             (indirect-blocks fs (nth b 12) 1)
             (indirect-blocks fs (nth b 13) 2)
-            (indirect-blocks fs (nth b 14) 3))))
+            (indirect-blocks fs (nth b 14) 3)))))
 
 (defn pointer-block [fs ptrs]
   (let [buf (beer.bytes/alloc (:block-size fs))]
@@ -636,16 +643,21 @@
                                (recur (+ o rec))))))))
                    blocks)]
     (when (not done)
-      (when (>= (count blocks) 12) (fail! :write path :directory-too-large))
-      (let [blk (first (alloc-blocks! fs (group-of-inode fs (:ino dir)) 1))
-            buf (beer.bytes/alloc bs)]
+      (let [goal (group-of-inode fs (:ino dir))
+            blk (first (alloc-blocks! fs goal 1))
+            buf (beer.bytes/alloc bs)
+            data (conj (vec blocks) blk)]
         (put-entry! fs buf 0 ino bs name t)
         (write-block! fs blk buf)
-        (inode-update! fs (:ino dir)
-                       (fn [b o]
-                         (u32! b (+ o i-block (* 4 (count blocks))) blk)
-                         (u32! b (+ o i-size) (* bs (inc (count blocks))))
-                         (u32! b (+ o i-blocks) (+ (u32 b (+ o i-blocks)) (quot bs 512)))))))
+        ;; a new block map (direct, then indirect blocks past 12)
+        (free-blocks! fs (concat (indirect-blocks fs (nth (:block dir) 12) 1)
+                                 (indirect-blocks fs (nth (:block dir) 13) 2)))
+        (let [[bmap extra] (build-map! fs goal data path)]
+          (inode-update! fs (:ino dir)
+                         (fn [b o]
+                           (set-block-map! b o bmap)
+                           (u32! b (+ o i-size) (* bs (count data)))
+                           (u32! b (+ o i-blocks) (* (+ (count data) extra) (quot bs 512))))))))
     (inode-update! fs (:ino dir) (fn [b o] (u32! b (+ o i-mtime) (now)) (u32! b (+ o i-ctime) (now))))))
 
 (defn remove-entry!
@@ -787,3 +799,87 @@
          (inode-update! fs (:ino parent) (fn [b o] (u16! b (+ o i-links) (dec (u16 b (+ o i-links)))))))
        (when (:flush! (:dev fs)) ((:flush! (:dev fs))))
        nil))))
+
+(defn set-dotdot!
+  "Point directory inode dir's .. entry at parent-ino."
+  [fs dir parent-ino]
+  (let [blk (first (file-blocks fs dir))
+        buf (read-block fs blk)
+        bs (:block-size fs)]
+    (loop [o 0]
+      (when (< o bs)
+        (let [rec (u16 buf (+ o 4))]
+          (if (and (not= 0 (u32 buf o)) (= 2 (name-len fs buf o))
+                   (= ".." (beer.bytes/->string (beer.bytes/slice buf (+ o 8) 2))))
+            (do (u32! buf o parent-ino) (write-block! fs blk buf))
+            (when (> rec 0) (recur (+ o rec)))))))))
+
+(defn mv!
+  "Rename or move from to to (within this filesystem). An existing file at
+  to is replaced; an existing empty directory too, when moving a directory."
+  [fs from to]
+  (writable! fs :mv from)
+  (locked
+   (fn []
+     (let [[p1 n1] (parent-and-name fs from)
+           ino (lookup fs p1 n1)]
+       (when (nil? ino) (fail! :mv from :not-found))
+       (let [inode (read-inode fs ino)
+             dir? (= (:type inode) :dir)
+             norm (fn [p] (str "/" (beer.string/join "/" (split-path p))))]
+         (when (and dir? (or (= (norm to) (norm from))
+                             (beer.string/starts-with? (norm to) (str (norm from) "/"))))
+           (fail! :mv to :into-itself))
+         (let [[p2 n2] (parent-and-name fs to)
+               old (lookup fs p2 n2)]
+           (when (not= old ino)
+             (when old
+               (let [o (read-inode fs old)]
+                 (cond
+                   (and dir? (not= (:type o) :dir)) (fail! :mv to :not-a-directory)
+                   (and (not dir?) (= (:type o) :dir)) (fail! :mv to :is-a-directory)
+                   (and dir? (not (empty? (filter (fn [e] (and (not= (:name e) ".") (not= (:name e) "..")))
+                                                 (dir-entries fs o)))))
+                   (fail! :mv to :not-empty)
+                   :else nil)
+                 (remove-entry! fs p2 n2 to)
+                 (if (or dir? (<= (:links o) 1))
+                   (do (release-inode! fs o)
+                       (when dir? (inode-update! fs (:ino p2) (fn [b q] (u16! b (+ q i-links) (dec (u16 b (+ q i-links))))))))
+                   (inode-update! fs old (fn [b q] (u16! b (+ q i-links) (dec (:links o))))))))
+             (add-entry! fs (read-inode fs (:ino p2)) n2 ino (:type inode) to)
+             (remove-entry! fs (read-inode fs (:ino p1)) n1 from)
+             (when (and dir? (not= (:ino p1) (:ino p2)))
+               (set-dotdot! fs inode (:ino p2))
+               (inode-update! fs (:ino p1) (fn [b q] (u16! b (+ q i-links) (dec (u16 b (+ q i-links))))))
+               (inode-update! fs (:ino p2) (fn [b q] (u16! b (+ q i-links) (inc (u16 b (+ q i-links)))))))
+             (inode-update! fs ino (fn [b q] (u32! b (+ q i-ctime) (now)))))))
+       (when (:flush! (:dev fs)) ((:flush! (:dev fs))))
+       nil))))
+
+(defn symlink!
+  "Make path a symbolic link to target."
+  [fs target path]
+  (writable! fs :symlink path)
+  (locked
+   (fn []
+     (let [[parent nm] (parent-and-name fs path)]
+       (when (lookup fs parent nm) (fail! :symlink path :exists))
+       (let [tb (beer.bytes/from-string target)
+             n (beer.bytes/capacity tb)
+             ino (alloc-inode! fs (group-of-inode fs (:ino parent)) false)]
+         (init-inode! fs ino 0xA1FF 1)                            ; symlink, rwxrwxrwx
+         (if (< n 60)
+           (inode-update! fs ino (fn [b o]
+                                   (beer.bytes/copy! b (+ o i-block) tb 0 n)
+                                   (u32! b (+ o i-size) n)))
+           (let [bs (:block-size fs)
+                 blk (first (alloc-blocks! fs (group-of-inode fs ino) 1))]
+             (write-data! fs [blk] tb n)
+             (inode-update! fs ino (fn [b o]
+                                     (u32! b (+ o i-block) blk)
+                                     (u32! b (+ o i-size) n)
+                                     (u32! b (+ o i-blocks) (quot bs 512))))))
+         (add-entry! fs parent nm ino :symlink path)
+         (when (:flush! (:dev fs)) ((:flush! (:dev fs))))
+         nil)))))

@@ -63,6 +63,17 @@
   (swap! (:files fs) (fn [m] (dissoc m path)))
   nil)
 
+(defn ram-mv! [fs from to]
+  (let [m @(:files fs) pre (str from "/")]
+    (when (and (nil? (get m from)) (not (ram-dir? fs from))) (ram-fail! from :not-found))
+    (swap! (:files fs)
+           (fn [m] (into {} (map (fn [[k v]]
+                                   (cond (= k from) [to v]
+                                         (beer.string/starts-with? k pre) [(str to "/" (subs k (count pre))) v]
+                                         :else [k v]))
+                                 m))))
+    nil))
+
 (defn ext2-write! [fs path s append?]
   (beer.ext2/write-file! fs path (if append?
                                    (str (try (beer.ext2/slurp fs path) (catch e "")) s)
@@ -78,7 +89,9 @@
           :write!     ext2-write!
           :mkdir!     beer.ext2/mkdir!
           :rm!        beer.ext2/rm!
-          :rmdir!     beer.ext2/rmdir!}
+          :rmdir!     beer.ext2/rmdir!
+          :mv!        beer.ext2/mv!
+          :symlink!   (fn [fs rel target] (beer.ext2/symlink! fs target rel))}
    :ram  {:ls         ram-ls
           :slurp      ram-slurp
           :read-bytes (fn [fs path] (beer.bytes/from-string (ram-slurp fs path)))
@@ -88,7 +101,8 @@
           :write!     ram-write!
           :mkdir!     ram-mkdir!
           :rm!        ram-rm!
-          :rmdir!     ram-rmdir!}})
+          :rmdir!     ram-rmdir!
+          :mv!        ram-mv!}})
 
 (beer.reload/defonce mount-table (atom {}))
 
@@ -232,6 +246,16 @@
 (defn mkdir! "Make a directory (its parent must exist)." [path] (write-op :mkdir! path))
 (defn rm!    "Remove a file." [path] (write-op :rm! path))
 (defn rmdir! "Remove an empty directory." [path] (write-op :rmdir! path))
+
+(defn mv!
+  "Rename or move a file or directory (both paths on the same file system)."
+  [from to]
+  (let [[fs1 _] (locate from) [fs2 rel2] (locate to)]
+    (when (not= fs1 fs2)
+      (throw (ex-info (str "fs: mv across file systems: " from " -> " to) {:reason :cross-device})))
+    (write-op :mv! from rel2)))
+
+(defn symlink! "Make path a symbolic link to target." [target path] (write-op :symlink! path target))
 
 (defn spit!
   "Write string s to path (append? to add to it): ext2 (/) and ram (/tmp)

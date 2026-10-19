@@ -167,6 +167,8 @@ file system without a `:write!` op (ext2) throws `:read-only`.
 (spit "/etc/motd" "hello\n")                  ; beerlang's spit, through *fs*
 (beer.fs/spit! "/work/a.txt" "text" true)     ; append
 (beer.fs/mkdir! "/work") (beer.fs/rm! "/work/a.txt") (beer.fs/rmdir! "/work")
+(beer.fs/mv! "/a.txt" "/work/b.txt")          ; rename / move (same file system)
+(beer.fs/symlink! "/work/b.txt" "/latest")    ; target, then the link
 ```
 
 `write-file!` creates the file if needed (an inode from the inode bitmap,
@@ -178,9 +180,15 @@ group descriptors and the superblock are read-modified-written with each
 change; bitmaps are read fresh. One lock serialises write operations.
 Timestamps come from the RTC (`beer.mem/unix-time`).
 
+`mv!` replaces an existing file (or empty directory) at the target,
+fixes a moved directory's `..` and both parents' link counts, and refuses
+moving a directory into itself. Symlinks under 60 bytes live in the inode
+("fast"), longer ones in a block. Directories grow past 12 blocks
+through indirect blocks.
+
 Not handled: htree-indexed directories (refused; mke2fs only indexes big
-ones), rename, symlinks, growing a directory past 12 blocks, unknown
-ro_compat features (refused). There is no journal: after a crash, check
+ones), hard links, files past double indirect, unknown ro_compat features
+(refused). There is no journal: after a crash, check
 the image on the host with `e2fsck -fn build/disk.img` (or `-fy` to fix).
 
 Since the disk now holds your work, the run targets keep an existing

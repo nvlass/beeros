@@ -27,12 +27,13 @@ effects guarded, built-in lib sources on the disk, `:reload` in
   renderers and the editor call by name), but watch for `spawn` of
   closures.
 
-### ext2: rename, and the rest of writes
+### ext2: what's left
 
-Writing files, mkdir, rm, rmdir work (2026-10-19). Still to do: `mv`
-(rename, also across directories, fixing `..`), symlinks, triple-indirect
-files (> 64 MiB with 1 KiB blocks), growing a directory past 12 blocks,
-and a write-back cache (every write goes to the device now).
+Done: writing files, mkdir, rm, rmdir (2026-10-19); mv (rename and move,
+`..` fixed), symlinks, directories past 12 blocks (2026-10-20). Left:
+triple-indirect files (> ~64 MiB with 1 KiB blocks), hard links, a
+write-back cache (every write goes to the device), and a journal-less
+crash story beyond "run e2fsck on the host".
 
 ### Games: next steps
 

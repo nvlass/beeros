@@ -39,6 +39,27 @@ into a `beer.wm` surface — fonts, colours, split views, mouse — on the
 same text model (`beermacs.buffer`). Wants a PSF font in `/share/fonts`
 (e.g. Terminus) chosen in `/etc/beeros.edn`.
 
+### `beer.pkg/start`: run a package like a program
+
+`run`/`exec` run in the caller's task (like bash's `source`). Add
+`(beer.pkg/start "beermacs" & args)`: a new task with fresh bindings
+(`*ns*` user, its own output); under beer.wm in a new window, else in the
+background (like `&`).
+
+### Actors and named channels
+
+- `beer.hive`'s local half (actors, `register`/`whereis`, supervisors)
+  needs no network, but the namespace requires `beer.hive.node`
+  (`beer.tcp`, `beer.crypto`) at load, so it doesn't load with
+  `BEER_PLATFORM=none`. Open in beerlang's TODO; wanted: load the node
+  part lazily (on `start-node!`).
+- Named channels instead of Unix sockets: everything shares one image, so
+  a registry name -> channel is enough (hive's `register`/`whereis` is
+  that for actors). Maybe later a Plan 9-ish twist: channels under a path
+  (`/run/clipboard`) through a beer.fs mount.
+- Real sockets come with networking (virtio-net + a TCP/IP stack,
+  docs/network.md); then hive's distribution works between machines.
+
 ## beermacs
 
 - Undo: redo (undo as an edit, like Emacs), smaller groups of

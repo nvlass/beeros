@@ -139,7 +139,7 @@ MKE2FS     ?= $(firstword $(wildcard /opt/homebrew/opt/e2fsprogs/sbin/mke2fs /us
 DISK_SIZE  ?= 16M
 DISK_IMG    = build/disk.img
 ROOTFS_STAGE = build/rootfs
-ROOTFS_BEERLANG_LIBS = string json test digest crypto tar
+ROOTFS_BEERLANG_LIBS = string json test digest crypto tar hive hive/node hive/wire
 ROOTFS_DIRS = bin etc lib/beer pkg share/fonts tmp var
 
 # The image is writable (ext2 writes): running never rebuilds an existing
@@ -166,7 +166,10 @@ $(DISK_IMG): Makefile $(shell find rootfs packages docs -type f) $(patsubst %,$(
 	if [ -f $@ ]; then mv $@ $@.bak; fi
 	mkdir -p $(addprefix $(ROOTFS_STAGE)/,$(ROOTFS_DIRS))
 	cp -R rootfs/. $(ROOTFS_STAGE)/
-	cp $(patsubst %,$(BEER_ROOT)/lib/beer/%.beer,$(ROOTFS_BEERLANG_LIBS)) $(ROOTFS_STAGE)/lib/beer/
+	for l in $(ROOTFS_BEERLANG_LIBS); do \
+	  mkdir -p $(ROOTFS_STAGE)/lib/beer/$$(dirname $$l) && \
+	  cp $(BEER_ROOT)/lib/beer/$$l.beer $(ROOTFS_STAGE)/lib/beer/$$l.beer || exit 1; \
+	done
 	mkdir -p $(ROOTFS_STAGE)/share/doc && cp docs/*.md $(ROOTFS_STAGE)/share/doc/
 	for p in $(PACKAGES); do \
 	  $(PKG_TAR) -cf $(ROOTFS_STAGE)/pkg/$$p.tar -C packages/$$p beer.edn \

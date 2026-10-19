@@ -58,11 +58,9 @@ background (like `&`).
 
 ### Actors and named channels
 
-- `beer.hive`'s local half (actors, `register`/`whereis`, supervisors)
-  needs no network, but the namespace requires `beer.hive.node`
-  (`beer.tcp`, `beer.crypto`) at load, so it doesn't load with
-  `BEER_PLATFORM=none`. Open in beerlang's TODO; wanted: load the node
-  part lazily (on `start-node!`).
+- `beer.hive` works on beeros (beerlang ca2635b loads the node layer only
+  on first remote use; `/lib/beer/hive*.beer` are on the image): local
+  actors, `ask`, `register`/`whereis`, supervisors, monitors.
 - Named channels instead of Unix sockets: everything shares one image, so
   a registry name -> channel is enough (hive's `register`/`whereis` is
   that for actors). Maybe later a Plan 9-ish twist: channels under a path
